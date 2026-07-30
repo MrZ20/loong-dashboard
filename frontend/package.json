@@ -10,7 +10,7 @@
     "build": "vite build && node scripts/prepare-sites-build.mjs",
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview",
-    "test:sites": "npm run build --silent && node --test tests/sites-worker.test.mjs"
+    "test:sites": "npm run build --silent && node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@primer/octicons": "^19.24.1",

@@ -55,7 +55,7 @@ async function createDevToken(
     JSON.stringify({
       email,
       displayName,
-      exp: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      exp: Date.now() + 24 * 60 * 60 * 1000,
     }),
   );
   return `${payload}.${await hmac(payload, secret)}`;
@@ -104,10 +104,13 @@ export async function getAuthenticatedUser(
   request: Request,
   env: WorkerEnv,
 ): Promise<AuthenticatedUser | null> {
-  const forwardedEmail = request.headers
-    .get("oai-authenticated-user-email")
-    ?.trim()
-    .toLowerCase();
+  const trustHostingIdentity = env.ALLOW_DEV_AUTH !== "true";
+  const forwardedEmail = trustHostingIdentity
+    ? request.headers
+        .get("oai-authenticated-user-email")
+        ?.trim()
+        .toLowerCase()
+    : undefined;
   let email = forwardedEmail ?? "";
   let displayName = forwardedEmail ? decodeForwardedName(request) : "";
   let mode: AuthenticatedUser["mode"] = "chatgpt";
@@ -157,17 +160,51 @@ export async function createDevelopmentSession(
   env: WorkerEnv,
   email: string,
   displayName: string,
+  password: string,
+  secure = false,
 ) {
   if (env.ALLOW_DEV_AUTH !== "true") {
     throw new HttpError(404, "本地登录未启用");
   }
+  if (!env.LOCAL_ADMIN_PASSWORD) {
+    throw new HttpError(503, "本地管理员密码未配置");
+  }
+  if (!(await passwordsMatch(password, env.LOCAL_ADMIN_PASSWORD))) {
+    throw new HttpError(401, "管理员密码不正确");
+  }
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
     throw new HttpError(400, "请输入有效邮箱");
   }
-  const token = await createDevToken(env, email.toLowerCase(), displayName || email);
-  return `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`;
+  return createTrustedDevelopmentSession(env, email, displayName, secure);
 }
 
-export function clearSessionCookie() {
-  return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+async function passwordsMatch(provided: string, expected: string) {
+  const digest = async (value: string) =>
+    new Uint8Array(
+      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)),
+    );
+  const [left, right] = await Promise.all([digest(provided), digest(expected)]);
+  let difference = left.length ^ right.length;
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    difference |= (left[index] ?? 0) ^ (right[index] ?? 0);
+  }
+  return difference === 0;
+}
+
+export async function createTrustedDevelopmentSession(
+  env: WorkerEnv,
+  email: string,
+  displayName: string,
+  secure = false,
+) {
+  const token = await createDevToken(env, email.toLowerCase(), displayName || email);
+  return `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${
+    secure ? "; Secure" : ""
+  }`;
+}
+
+export function clearSessionCookie(secure = false) {
+  return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${
+    secure ? "; Secure" : ""
+  }`;
 }

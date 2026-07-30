@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import type { RepositoryMeta, ThemeMode } from "../types";
 import Octicon from "./Octicon.vue";
 
-defineProps<{
+const props = defineProps<{
   repo: RepositoryMeta;
   refreshing: boolean;
   theme: ThemeMode;
@@ -13,6 +14,18 @@ defineProps<{
     badge: string;
   } | null;
 }>();
+
+const syncedLabel = computed(() => {
+  if (!props.repo.lastSyncedAt) return "尚未同步";
+  const elapsed = Math.max(
+    0,
+    Date.now() - new Date(props.repo.lastSyncedAt).valueOf(),
+  );
+  if (elapsed < 60_000) return "刚刚同步";
+  if (elapsed < 3_600_000) return `${Math.round(elapsed / 60_000)} 分钟前同步`;
+  if (elapsed < 86_400_000) return `${Math.round(elapsed / 3_600_000)} 小时前同步`;
+  return `${Math.round(elapsed / 86_400_000)} 天前同步`;
+});
 
 const emit = defineEmits<{
   refresh: [];
@@ -61,11 +74,11 @@ const emit = defineEmits<{
         </div>
         <span class="updated-time">
           <span class="status-dot" />
-          12 分钟前同步
+          {{ syncedLabel }}
         </span>
         <button class="button button--secondary" :disabled="refreshing" @click="emit('refresh')">
           <Octicon name="sync" :size="15" :class="{ spinning: refreshing }" />
-          {{ refreshing ? "同步中" : "同步" }}
+          {{ refreshing ? "同步中" : `同步 ${repo.name}` }}
         </button>
       </div>
     </div>

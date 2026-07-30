@@ -28,6 +28,13 @@ import {
   syncRepository,
 } from "./github";
 import {
+  deduplicateObservedEvents,
+  getTodaySummary,
+  listCrossRepoImpacts,
+  refreshCrossRepoImpacts,
+  updateCrossRepoImpactStatus,
+} from "./intelligence";
+import {
   cleanText,
   handleError,
   HttpError,
@@ -37,6 +44,7 @@ import {
   requireMethod,
 } from "./http";
 import { handleSettings } from "./settings";
+import { beijingDate, beijingDayWindow } from "./time";
 
 function pathMatch(pathname: string, pattern: RegExp) {
   const match = pathname.match(pattern);
@@ -52,6 +60,8 @@ function isKnownApiPath(path: string) {
     "/api/auth/logout",
     "/api/repositories",
     "/api/community",
+    "/api/today",
+    "/api/impacts",
     "/api/watchlist",
     "/api/analyses",
     "/api/analyses/generate",
@@ -65,6 +75,7 @@ function isKnownApiPath(path: string) {
     /^\/api\/community\/[^/]+\/(pr|issue)\/\d+(\/(analyze|diff-files))?$/,
     /^\/api\/watchlist\/.+$/,
     /^\/api\/analyses\/[^/]+$/,
+    /^\/api\/impacts\/[^/]+$/,
     /^\/api\/domains\/[^/]+\/snapshot$/,
     /^\/api\/documents\/[^/]+$/,
     /^\/api\/settings\/(profile|accounts|ai-providers)$/,
@@ -121,7 +132,20 @@ async function listCommunity(request: Request, env: WorkerEnv) {
 
   const rows = await query<Record<string, any>>(
     env,
-    `SELECT * FROM community_items
+    `SELECT community_items.*,
+       (
+         SELECT event_type FROM community_events
+         WHERE community_events.item_id = community_items.id
+           AND event_type != 'updated'
+         ORDER BY occurred_at DESC, id DESC LIMIT 1
+       ) AS last_event_type,
+       (
+         SELECT occurred_at FROM community_events
+         WHERE community_events.item_id = community_items.id
+           AND event_type != 'updated'
+         ORDER BY occurred_at DESC, id DESC LIMIT 1
+       ) AS last_event_at
+     FROM community_items
      ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
      ORDER BY important DESC, updated_at DESC
      LIMIT ?`,
@@ -144,7 +168,21 @@ async function getCommunityItem(
   if (!Number.isInteger(number)) throw new HttpError(400, "编号不正确");
   let item = await first<Record<string, any>>(
     env,
-    "SELECT * FROM community_items WHERE repo_id = ? AND kind = ? AND number = ?",
+    `SELECT community_items.*,
+      (
+        SELECT event_type FROM community_events
+        WHERE community_events.item_id = community_items.id
+          AND event_type != 'updated'
+        ORDER BY occurred_at DESC, id DESC LIMIT 1
+      ) AS last_event_type,
+      (
+        SELECT occurred_at FROM community_events
+        WHERE community_events.item_id = community_items.id
+          AND event_type != 'updated'
+        ORDER BY occurred_at DESC, id DESC LIMIT 1
+      ) AS last_event_at
+     FROM community_items
+     WHERE repo_id = ? AND kind = ? AND number = ?`,
     [repo, kind, number],
   );
   if (!item) throw new HttpError(404, "社区条目不存在");
@@ -155,6 +193,15 @@ async function getCommunityItem(
       ...item,
       diff_json: JSON.stringify(refreshed.diff),
       domain: refreshed.domain,
+      domain_source: refreshed.domainAssessment?.source ?? item.domain_source,
+      domain_confidence:
+        refreshed.domainAssessment?.confidence ?? item.domain_confidence,
+      domain_evidence_json: JSON.stringify(
+        refreshed.domainAssessment ?? {},
+      ),
+      review_signal_json: JSON.stringify(refreshed.reviewSignal ?? {}),
+      review_signal_updated_at:
+        refreshed.reviewSignalUpdatedAt ?? item.review_signal_updated_at,
     };
   }
 
@@ -200,14 +247,61 @@ async function analyzeItem(
     [repo, kind, number],
   );
   if (!row) throw new HttpError(404, "社区条目不存在");
-  const diff = parseJson<{
+  let diff = parseJson<{
     entries?: Array<{ path: string; additions: number; deletions: number }>;
+    files?: number;
+    additions?: number;
+    deletions?: number;
   } | null>(row.diff_json, null);
+  let analysisDiffText = diffToText(diff);
+  if (kind === "pr") {
+    const refreshed = await ensurePullStats(env, repo, number);
+    diff = refreshed.diff ?? null;
+    const patches = await ensurePullPatches(env, repo, number);
+    const domainAssessment = refreshed.domainAssessment;
+    const reviewSignal = refreshed.reviewSignal;
+    analysisDiffText = [
+      domainAssessment
+        ? [
+            `领域判断：${domainAssessment.domain}`,
+            `判断来源：${domainAssessment.source}`,
+            `置信度：${Math.round(Number(domainAssessment.confidence ?? 0) * 100)}%`,
+            domainAssessment.matchedPaths?.length
+              ? `路径证据：${domainAssessment.matchedPaths.join(", ")}`
+              : "路径证据：尚未命中已配置规则",
+          ].join("\n")
+        : "",
+      reviewSignal
+        ? [
+            `Review 建议：${reviewSignal.label}`,
+            `CI：${reviewSignal.ciStatus}`,
+            `合并状态：${reviewSignal.mergeability}`,
+            `Review 决策：${reviewSignal.reviewDecision}`,
+            `落后目标分支：${reviewSignal.behindBy ?? "未知"}`,
+            `事实依据：${reviewSignal.reasons?.join("；") || "信号待补全"}`,
+          ].join("\n")
+        : "",
+      diffToText(diff),
+      ...patches.entries.map(
+        (entry) =>
+          `diff -- ${entry.path}\n${entry.patch ?? "[GitHub 未返回文本 patch]"}`,
+      ),
+      patches.skippedLarge
+        ? `${patches.skippedLarge} 个超过 1000 行的文件未读取代码内容。`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
   const fallback = `# ${row.title} · 深度分析
 
 ## 改动目的
 
 ${row.ai_summary || "该条目尚未生成 AI 摘要。"}
+
+## 本次关注点
+
+${cleanText(body.prompt, 5_000) || "未提供额外分析要求。"}
 
 ## 实现与代码路径
 
@@ -222,14 +316,14 @@ ${diff?.entries?.length
 
 ## 建议动作
 
-1. 如需代码级结论，先在详情页点击“获取具体代码修改”。
+1. 当前未配置模型；请在详情页点击“获取代码修改”后人工核对具体实现。
 2. 核对新增测试是否覆盖多卡和异常路径。
 3. 对仍缺少证据的判断标记为待确认。`;
   const result = await analyzeCommunityItem(env, {
     userId: user.id,
     title: row.title,
     bodyMd: row.body_md,
-    diffText: diffToText(diff),
+    diffText: analysisDiffText,
     prompt: cleanText(body.prompt, 5_000),
     fallback,
   });
@@ -283,20 +377,117 @@ async function generateAnalysis(request: Request, env: WorkerEnv) {
   const type = cleanText(body.type, 40) || "insight";
   const scope = cleanText(body.scope, 80) || "all";
   const prompt = cleanText(body.prompt, 8_000);
-  const rows = await query<Record<string, any>>(
-    env,
-    `SELECT repo_id, kind, number, title, domain, ai_summary, updated_at
-     FROM community_items
-     WHERE (? = 'all' OR repo_id = ?)
-     ORDER BY updated_at DESC LIMIT 80`,
-    [scope, scope],
-  );
-  const evidence = rows
+  const dayWindow = type === "daily" ? beijingDayWindow() : null;
+  const rawRows = dayWindow
+    ? await query<Record<string, any>>(
+        env,
+        `SELECT
+          community_items.repo_id,
+          community_items.kind,
+          community_items.number,
+          community_items.title,
+          community_items.domain,
+          community_items.ai_summary,
+          community_items.summary_source,
+          community_items.updated_at,
+          community_events.event_type,
+          community_events.occurred_at
+         FROM community_events
+         JOIN community_items ON community_items.id = community_events.item_id
+         WHERE (? = 'all' OR community_items.repo_id = ?)
+           AND community_events.occurred_at >= ?
+           AND community_events.occurred_at < ?
+         ORDER BY community_events.occurred_at DESC
+         LIMIT 120`,
+        [scope, scope, dayWindow.start, dayWindow.end],
+      )
+    : await query<Record<string, any>>(
+        env,
+        `SELECT repo_id, kind, number, title, domain, ai_summary,
+          summary_source, updated_at
+         FROM community_items
+         WHERE (? = 'all' OR repo_id = ?)
+         ORDER BY updated_at DESC LIMIT 80`,
+        [scope, scope],
+      );
+  const rows = dayWindow
+    ? deduplicateObservedEvents(rawRows)
+    : rawRows;
+  const [watchRows, impactRows] =
+    type === "insight"
+      ? await Promise.all([
+          query<Record<string, any>>(
+            env,
+            `SELECT community_items.repo_id, community_items.kind,
+              community_items.number, community_items.title,
+              watchlist.reason, watchlist.priority, watchlist.note
+             FROM watchlist
+             JOIN community_items ON community_items.id = watchlist.item_id
+             WHERE watchlist.user_id = ?
+             ORDER BY
+               CASE watchlist.priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1
+                 WHEN 'P2' THEN 2 ELSE 3 END,
+               watchlist.created_at DESC
+             LIMIT 30`,
+            [user.id],
+          ),
+          query<Record<string, any>>(
+            env,
+            `SELECT source.repo_id, source.kind, source.number, source.title,
+              cross_repo_impacts.domain, cross_repo_impacts.level,
+              cross_repo_impacts.status, cross_repo_impacts.analysis
+             FROM cross_repo_impacts
+             JOIN community_items source
+               ON source.id = cross_repo_impacts.source_item_id
+             ORDER BY cross_repo_impacts.updated_at DESC
+             LIMIT 30`,
+          ),
+        ])
+      : [[], []];
+  const domainCounts = new Map<string, number>();
+  for (const item of rows) {
+    if (item.domain && item.domain !== "Other") {
+      domainCounts.set(item.domain, (domainCounts.get(item.domain) ?? 0) + 1);
+    }
+  }
+  const communityEvidence = rows
     .map(
       (item) =>
-        `- ${item.repo_id} ${item.kind} #${item.number} [${item.domain}] ${item.title}\n  ${item.ai_summary}`,
+        `- ${item.repo_id} ${item.kind} #${item.number} [${item.domain}] ${item.title}${
+          item.event_type
+            ? `\n  事件：${item.event_type} @ ${item.occurred_at}`
+            : ""
+        }\n  ${item.summary_source === "ai" ? "AI 摘要" : "正文摘录"}：${item.ai_summary}`,
     )
     .join("\n");
+  const watchEvidence = watchRows
+    .map(
+      (item) =>
+        `- ${item.priority} ${item.repo_id} ${item.kind} #${item.number}：${item.title}\n  关注原因：${item.reason}${item.note ? `；备注：${item.note}` : ""}`,
+    )
+    .join("\n");
+  const impactEvidence = impactRows
+    .map(
+      (item) =>
+        `- ${item.level}/${item.status} ${item.repo_id} ${item.kind} #${item.number} [${item.domain}]：${item.title}\n  ${item.analysis}`,
+    )
+    .join("\n");
+  const domainEvidence = [...domainCounts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .map(([domain, count]) => `- ${domain}：${count} 条活动记录`)
+    .join("\n");
+  const evidence = [
+    `## 社区事项\n${communityEvidence || "- 暂无已同步事项"}`,
+    type === "insight"
+      ? `## 关注列表\n${watchEvidence || "- 暂无关注项"}`
+      : "",
+    type === "insight"
+      ? `## 跨仓库影响\n${impactEvidence || "- 暂无待确认关系"}`
+      : "",
+    `## 领域活动\n${domainEvidence || "- 暂无可归类活动"}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   const fallback = `# ${type === "daily" ? "每日社区分析" : "跨仓库 AI 洞察"}
 
 ## 执行摘要
@@ -305,7 +496,9 @@ async function generateAnalysis(request: Request, env: WorkerEnv) {
 
 ## 重要变化
 
-${rows.slice(0, 8).map((item) => `- **${item.repo_id}#${item.number}**：${item.title}`).join("\n")}
+${rows.slice(0, 8).map((item) => `- **${item.repo_id}#${item.number}**：${item.title}`).join("\n") || "- 当前时间范围没有已同步事项。"}
+
+${impactRows.length ? `## 跨仓库待确认\n\n${impactRows.slice(0, 5).map((item) => `- **${item.repo_id}#${item.number}**（${item.level}/${item.status}）：${item.analysis}`).join("\n")}` : ""}
 
 ## 风险与不确定性
 
@@ -326,10 +519,11 @@ ${rows.slice(0, 8).map((item) => `- **${item.repo_id}#${item.number}**：${item.
     fallback,
   });
   const now = new Date().toISOString();
+  const reportDate = beijingDate();
   const id = crypto.randomUUID();
   const title =
     cleanText(body.title, 200) ||
-    `${type === "daily" ? `${scope} 每日分析` : "跨仓库 AI 洞察"} · ${now.slice(0, 10)}`;
+    `${type === "daily" ? `${scope} 每日分析` : "跨仓库 AI 洞察"} · ${reportDate}`;
   await run(
     env,
     `INSERT INTO analysis_documents (
@@ -346,7 +540,17 @@ ${rows.slice(0, 8).map((item) => `- **${item.repo_id}#${item.number}**：${item.
       prompt,
       result.model,
       user.id,
-      JSON.stringify(rows.slice(0, 20).map((item) => `${item.repo_id}#${item.number}`)),
+      JSON.stringify(
+        [
+          ...rows.slice(0, 20).map((item) => `${item.repo_id}#${item.number}`),
+          ...watchRows
+            .slice(0, 10)
+            .map((item) => `watch:${item.repo_id}#${item.number}`),
+          ...impactRows
+            .slice(0, 10)
+            .map((item) => `impact:${item.repo_id}#${item.number}`),
+        ],
+      ),
       now,
       now,
     ],
@@ -798,11 +1002,17 @@ async function handleApi(request: Request, env: WorkerEnv) {
   }
   if (path === "/api/auth/dev-login") {
     requireMethod(request, ["POST"]);
-    const body = await readJson<{ email?: string; displayName?: string }>(request);
+    const body = await readJson<{
+      email?: string;
+      displayName?: string;
+      password?: string;
+    }>(request);
     const cookie = await createDevelopmentSession(
       env,
       cleanText(body.email, 200),
       cleanText(body.displayName, 100),
+      cleanText(body.password, 500),
+      new URL(request.url).protocol === "https:",
     );
     return json({ ok: true }, { headers: { "set-cookie": cookie } });
   }
@@ -810,15 +1020,23 @@ async function handleApi(request: Request, env: WorkerEnv) {
     requireMethod(request, ["POST"]);
     return json(
       { ok: true },
-      { headers: { "set-cookie": clearSessionCookie() } },
+      {
+        headers: {
+          "set-cookie": clearSessionCookie(
+            new URL(request.url).protocol === "https:",
+          ),
+        },
+      },
     );
   }
 
   const repositorySync = pathMatch(path, /^\/api\/repositories\/([^/]+)\/sync$/);
   if (repositorySync) {
     requireMethod(request, ["POST"]);
-    await requireUser(request, env);
-    return json({ run: await syncRepository(env, repositorySync[0]) });
+    const user = await requireUser(request, env);
+    const syncRun = await syncRepository(env, repositorySync[0], user.id);
+    await refreshCrossRepoImpacts(env);
+    return json({ run: syncRun });
   }
   if (path === "/api/repositories") {
     requireMethod(request, ["GET"]);
@@ -844,6 +1062,31 @@ async function handleApi(request: Request, env: WorkerEnv) {
     requireMethod(request, ["GET"]);
     await requireUser(request, env);
     return listCommunity(request, env);
+  }
+  if (path === "/api/today") {
+    requireMethod(request, ["GET"]);
+    await requireUser(request, env);
+    const repo = new URL(request.url).searchParams.get("repo");
+    if (!repo) throw new HttpError(400, "缺少仓库参数");
+    return json({ summary: await getTodaySummary(env, repo) });
+  }
+  if (path === "/api/impacts") {
+    requireMethod(request, ["GET"]);
+    await requireUser(request, env);
+    return json({ impacts: await listCrossRepoImpacts(env) });
+  }
+  const impactDetail = pathMatch(path, /^\/api\/impacts\/([^/]+)$/);
+  if (impactDetail) {
+    requireMethod(request, ["PATCH"]);
+    await requireUser(request, env);
+    const body = await readJson<{ status?: string }>(request);
+    const impact = await updateCrossRepoImpactStatus(
+      env,
+      impactDetail[0],
+      cleanText(body.status, 40),
+    );
+    if (!impact) throw new HttpError(404, "影响关系不存在或状态无效");
+    return json({ ok: true });
   }
   const communityDiffFiles = pathMatch(
     path,

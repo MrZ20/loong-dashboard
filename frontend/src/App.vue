@@ -10,6 +10,7 @@ import CrossRepoImpactView from "./components/CrossRepoImpactView.vue";
 import DailyAnalysis from "./components/DailyAnalysis.vue";
 import DetailDrawer from "./components/DetailDrawer.vue";
 import DomainMapView from "./components/DomainMapView.vue";
+import FilterDropdown from "./components/FilterDropdown.vue";
 import InsightBanner from "./components/InsightBanner.vue";
 import LoginView from "./components/LoginView.vue";
 import Octicon from "./components/Octicon.vue";
@@ -20,11 +21,7 @@ import WatchlistView from "./components/WatchlistView.vue";
 import {
   domainOptions,
 } from "./data/community";
-import {
-  aiInsights,
-  communityItemKey,
-  crossRepoImpacts,
-} from "./data/workspace";
+import { communityItemKey } from "./data/workspace";
 import { useAIChat } from "./composables/useAIChat";
 import type {
   AnalysisDocument,
@@ -34,6 +31,7 @@ import type {
   RepositoryMeta,
   RepositoryId,
   ThemeMode,
+  TodaySummary,
   UserAccount,
 } from "./types";
 
@@ -64,6 +62,10 @@ const documentCount = ref(0);
 const detailAnalysis = ref<AnalysisDocument | null>(null);
 const detailAnalyzing = ref(false);
 const detailDiffLoading = ref(false);
+const todayLoading = ref(false);
+const todaySummaries = ref<Record<string, TodaySummary>>({});
+const impactCount = ref(0);
+const insightCount = ref(0);
 let detailDiffRequestId = 0;
 const { setPageContext } = useAIChat();
 const storedTheme = window.localStorage.getItem("loongboard-theme");
@@ -165,9 +167,11 @@ const filteredItems = computed(() => {
       selectedDomain.value === "全部领域" || item.domain === selectedDomain.value;
     const matchesState =
       stateFilter.value === "全部状态" ||
-      (stateFilter.value === "开放中" && ["open", "draft"].includes(item.state)) ||
+      (stateFilter.value === "开放中" && item.state === "open") ||
+      (stateFilter.value === "Draft" && item.state === "draft") ||
       (stateFilter.value === "已合入" && item.state === "merged") ||
-      (stateFilter.value === "已关闭" && item.state === "closed");
+      (stateFilter.value === "已关闭" && item.state === "closed") ||
+      (stateFilter.value === "重新打开" && item.lastEventType === "reopened");
     const matchesQuery =
       !query ||
       item.title.toLowerCase().includes(query) ||
@@ -183,17 +187,98 @@ const activeKindLabel = computed(() =>
   activeView.value === "issues" ? "Issue" : "Pull Request",
 );
 
+const domainFilterOptions = domainOptions.map((domain) => {
+  const details: Record<
+    string,
+    { description: string; tone?: "accent" | "blue" | "neutral" | "purple" }
+  > = {
+    全部领域: {
+      description: "显示当前仓库的所有技术领域",
+      tone: "accent",
+    },
+    "Model Runner": {
+      description: "模型执行、批处理与图模式",
+      tone: "blue",
+    },
+    FusedMoE: {
+      description: "专家路由、融合算子与 MoE",
+      tone: "purple",
+    },
+    Scheduler: { description: "调度、KV Cache 与推测解码" },
+    Attention: { description: "Attention、MLA 与 KV 路径", tone: "blue" },
+    "CI / Infra": { description: "工作流、构建与基础设施" },
+    Distributed: { description: "并行策略、多机与通信" },
+    Quantization: { description: "量化格式、精度与算子" },
+    "Serving / API": { description: "服务入口、协议与客户端" },
+    "Model Support": { description: "模型实现、加载与适配" },
+    "Platform / Hardware": { description: "设备后端与底层算子" },
+    Documentation: { description: "文档、示例与开发指引" },
+    Tests: { description: "单元测试、集成与回归验证" },
+    Other: { description: "尚未归入明确领域的改动", tone: "neutral" },
+  };
+
+  return {
+    value: domain,
+    label: domain,
+    description: details[domain]?.description,
+    tone: details[domain]?.tone ?? "neutral",
+  };
+});
+
+const stateFilterOptions = computed(() => [
+  {
+    value: "全部状态",
+    label: "全部状态",
+    description: "不限制条目的当前状态",
+    tone: "accent" as const,
+  },
+  {
+    value: "开放中",
+    label: "开放中",
+    description: "等待处理或 Review",
+    tone: "green" as const,
+  },
+  ...(activeView.value === "pulls"
+    ? [
+        {
+          value: "Draft",
+          label: "Draft",
+          description: "仍在准备中的 Pull Request",
+          tone: "neutral" as const,
+        },
+        {
+          value: "已合入",
+          label: "已合入",
+          description: "改动已经合并到目标分支",
+          tone: "purple" as const,
+        },
+      ]
+    : []),
+  {
+    value: "已关闭",
+    label: "已关闭",
+    description: "已关闭且未合入",
+    tone: "red" as const,
+  },
+  {
+    value: "重新打开",
+    label: "重新打开",
+    description: "关闭后再次恢复处理",
+    tone: "orange" as const,
+  },
+]);
+
 watch([activeRepo, activeView], () => {
   detailDiffRequestId += 1;
   detailDiffLoading.value = false;
   selectedItem.value = null;
   detailAnalysis.value = null;
   sidebarOpen.value = false;
-  if (["pulls", "issues"].includes(activeView.value)) {
-    listLoading.value = true;
-    window.setTimeout(() => {
-      listLoading.value = false;
-    }, 260);
+  if (
+    activeView.value === "issues" &&
+    ["Draft", "已合入"].includes(stateFilter.value)
+  ) {
+    stateFilter.value = "全部状态";
   }
 });
 
@@ -232,11 +317,14 @@ function changeView(view: AppView) {
 }
 
 async function loadApplicationData() {
-  const [repos, items, watchItems, documents] = await Promise.all([
+  listLoading.value = true;
+  const [repos, items, watchItems, documents, insights, impacts] = await Promise.all([
     api.repositories(),
     api.community({ limit: 200 }),
     api.watchlist(),
     api.documents(),
+    api.analyses("insight", "all"),
+    api.impacts(),
   ]);
   repositoryData.value = repos;
   communityData.value = items;
@@ -244,6 +332,13 @@ async function loadApplicationData() {
     watchItems.map(({ item }) => communityItemKey(item)),
   );
   documentCount.value = documents.length;
+  insightCount.value = insights.length;
+  impactCount.value = impacts.length;
+  const today = await Promise.all(repos.map((repo) => api.today(repo.id)));
+  todaySummaries.value = Object.fromEntries(
+    today.map((summary) => [summary.repo, summary]),
+  );
+  listLoading.value = false;
 }
 
 async function initializeAuth() {
@@ -269,11 +364,11 @@ async function initializeAuth() {
   }
 }
 
-async function login(email: string, displayName: string) {
+async function login(email: string, displayName: string, password: string) {
   loginLoading.value = true;
   authError.value = "";
   try {
-    await api.devLogin(email, displayName);
+    await api.devLogin(email, displayName, password);
     await initializeAuth();
   } catch (cause) {
     authError.value =
@@ -296,22 +391,36 @@ async function logout() {
 
 async function refreshData() {
   refreshing.value = true;
+  todayLoading.value = true;
   listLoading.value = ["pulls", "issues"].includes(activeView.value);
   try {
-    await api.syncRepository(activeRepo.value);
-    const [repos, items] = await Promise.all([
+    const syncResult = await api.syncRepository(activeRepo.value);
+    const [repos, items, today, impacts, insights] = await Promise.all([
       api.repositories(),
       api.community({ limit: 200 }),
+      api.today(activeRepo.value),
+      api.impacts(),
+      api.analyses("insight", "all"),
     ]);
     repositoryData.value = repos;
     communityData.value = items;
-    showToast("GitHub 社区数据已同步");
+    todaySummaries.value = {
+      ...todaySummaries.value,
+      [activeRepo.value]: today,
+    };
+    impactCount.value = impacts.length;
+    insightCount.value = insights.length;
+    showToast(
+      syncResult.run.warning ||
+        `同步完成：${syncResult.run.capturedEvents} 条状态事件，${syncResult.run.analyzed} 条 AI 摘要`,
+    );
   } catch (cause) {
     showToast(
       cause instanceof ApiError ? cause.message : "GitHub 同步失败",
     );
   } finally {
     refreshing.value = false;
+    todayLoading.value = false;
     listLoading.value = false;
   }
 }
@@ -371,13 +480,14 @@ async function selectCommunityItem(item: CommunityItem) {
   }
 }
 
-async function analyzeSelectedItem(item: CommunityItem) {
+async function analyzeSelectedItem(item: CommunityItem, prompt = "") {
   detailAnalyzing.value = true;
   try {
     const result = await api.analyzeCommunityItem(
       item.repo,
       item.kind,
       item.id,
+      prompt,
     );
     detailAnalysis.value = result.analysis;
     showToast(
@@ -471,10 +581,12 @@ onMounted(initializeAuth);
       :repositories="repositoryData"
       :active-repo="activeRepo"
       :active-view="activeView"
-      :insight-count="aiInsights.length"
+      :insight-count="insightCount"
       :watchlist-count="watchlistItems.length"
-      :impact-count="crossRepoImpacts.length"
+      :impact-count="impactCount"
       :document-count="documentCount"
+      :focus-domain="todaySummaries[activeRepo]?.topDomain || '暂无'"
+      :focus-count="todaySummaries[activeRepo]?.importantChanges || 0"
       :user-name="authUser.displayName"
       :user-email="authUser.email"
       :open="sidebarOpen"
@@ -510,7 +622,10 @@ onMounted(initializeAuth);
           @select="selectCommunityItem"
           @toggle="toggleWatch"
         />
-        <CrossRepoImpactView v-else-if="activeView === 'impact'" />
+        <CrossRepoImpactView
+          v-else-if="activeView === 'impact'"
+          @update:count="impactCount = $event"
+        />
         <DomainMapView v-else-if="activeView === 'domains'" />
         <TechnicalDocsView
           v-else-if="activeView === 'docs'"
@@ -524,7 +639,12 @@ onMounted(initializeAuth);
         <DailyAnalysis v-else-if="activeView === 'analysis'" :repo="activeRepo" />
 
         <template v-else>
-          <InsightBanner :repo="activeRepo" @open="activeView = 'analysis'" />
+          <InsightBanner
+            :repo="activeRepo"
+            :summary="todaySummaries[activeRepo]"
+            :loading="todayLoading"
+            @open="activeView = 'analysis'"
+          />
 
           <section class="list-toolbar">
             <div class="list-toolbar__top">
@@ -544,28 +664,33 @@ onMounted(initializeAuth);
             </div>
 
             <div class="list-toolbar__filters">
-              <div class="domain-chips" aria-label="技术领域筛选">
-                <button
-                  v-for="domain in domainOptions"
-                  :key="domain"
-                  :class="{ 'domain-chip--active': selectedDomain === domain }"
-                  class="domain-chip"
-                  @click="selectedDomain = domain"
-                >
-                  {{ domain }}
-                </button>
+              <div class="filter-toolbar__intro">
+                <span class="filter-toolbar__intro-icon">
+                  <Octicon name="filter" :size="14" />
+                </span>
+                <span>
+                  <strong>筛选社区动态</strong>
+                  <small>按技术领域和当前状态缩小范围</small>
+                </span>
               </div>
 
-              <label class="state-filter">
-                <Octicon name="filter" :size="14" />
-                <select v-model="stateFilter">
-                  <option>全部状态</option>
-                  <option>开放中</option>
-                  <option v-if="activeView === 'pulls'">已合入</option>
-                  <option>已关闭</option>
-                </select>
-                <Octicon name="chevron-down" :size="13" />
-              </label>
+              <div class="filter-toolbar__controls">
+                <FilterDropdown
+                  v-model="selectedDomain"
+                  class="filter-dropdown--domain"
+                  label="技术领域"
+                  icon="stack"
+                  :options="domainFilterOptions"
+                />
+                <FilterDropdown
+                  v-model="stateFilter"
+                  class="filter-dropdown--state"
+                  label="当前状态"
+                  icon="filter"
+                  align="right"
+                  :options="stateFilterOptions"
+                />
+              </div>
             </div>
           </section>
 

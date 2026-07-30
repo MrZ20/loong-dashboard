@@ -17,6 +17,8 @@ export interface WorkerEnv {
   SESSION_SECRET?: string;
   CREDENTIALS_ENCRYPTION_KEY?: string;
   ALLOW_DEV_AUTH?: string;
+  LOCAL_ADMIN_PASSWORD?: string;
+  SEED_DEMO_DATA?: string;
 }
 
 export function requireDb(env: WorkerEnv) {
@@ -67,19 +69,83 @@ export function parseJson<T>(value: unknown, fallback: T): T {
 
 export async function initializeDatabase(env: WorkerEnv) {
   const db = requireDb(env);
-  await db.batch([
-    ...schemaStatements.map((statement) => db.prepare(statement)),
-    ...indexStatements.map((statement) => db.prepare(statement)),
-  ]);
+  await db.batch(schemaStatements.map((statement) => db.prepare(statement)));
+  await ensureRuntimeColumns(env);
+  await db.batch(indexStatements.map((statement) => db.prepare(statement)));
+  await ensureCoreRepositories(env);
 
   const seedVersion = await first<{ value: string }>(
     env,
     "SELECT value FROM app_meta WHERE key = ?",
     ["seed_version"],
   );
-  if (seedVersion?.value === "2") return;
+  if (seedVersion?.value === "3") return;
 
-  await seedDatabase(env);
+  if (env.SEED_DEMO_DATA === "true") {
+    await seedDatabase(env);
+  } else {
+    await run(
+      env,
+      `INSERT INTO app_meta(key, value, updated_at) VALUES('seed_version', '3', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      [new Date().toISOString()],
+    );
+  }
+}
+
+async function ensureRuntimeColumns(env: WorkerEnv) {
+  const columns = await query<{ name: string }>(
+    env,
+    "PRAGMA table_info(community_items)",
+  );
+  const existing = new Set(columns.map((column) => column.name));
+  const additions = [
+    ["created_at", "ALTER TABLE community_items ADD COLUMN created_at TEXT"],
+    ["closed_at", "ALTER TABLE community_items ADD COLUMN closed_at TEXT"],
+    [
+      "is_draft",
+      "ALTER TABLE community_items ADD COLUMN is_draft INTEGER NOT NULL DEFAULT 0",
+    ],
+    [
+      "content_hash",
+      "ALTER TABLE community_items ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
+    ],
+    [
+      "summary_input_hash",
+      "ALTER TABLE community_items ADD COLUMN summary_input_hash TEXT NOT NULL DEFAULT ''",
+    ],
+    [
+      "summary_source",
+      "ALTER TABLE community_items ADD COLUMN summary_source TEXT NOT NULL DEFAULT 'excerpt'",
+    ],
+    [
+      "summary_updated_at",
+      "ALTER TABLE community_items ADD COLUMN summary_updated_at TEXT",
+    ],
+  ] as const;
+  for (const [name, sql] of additions) {
+    if (!existing.has(name)) await run(env, sql);
+  }
+}
+
+async function ensureCoreRepositories(env: WorkerEnv) {
+  const now = new Date().toISOString();
+  for (const [id, name] of [
+    ["vllm", "vllm"],
+    ["vllm-ascend", "vllm-ascend"],
+  ] as const) {
+    await run(
+      env,
+      `INSERT INTO repositories(
+        id, owner, name, enabled, open_pull_count, open_issue_count,
+        sync_status, created_at
+      ) VALUES(?, 'vllm-project', ?, 1, 0, 0, 'idle', ?)
+      ON CONFLICT(id) DO UPDATE SET
+        owner = excluded.owner,
+        name = excluded.name`,
+      [id, name, now],
+    );
+  }
 }
 
 async function seedDatabase(env: WorkerEnv) {
@@ -262,7 +328,7 @@ ${architecture.symbols.map((symbol) => `- \`${symbol}\``).join("\n")}`;
   statements.push(
     db
       .prepare(
-        `INSERT INTO app_meta(key, value, updated_at) VALUES('seed_version', '2', ?)
+        `INSERT INTO app_meta(key, value, updated_at) VALUES('seed_version', '3', ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
       )
       .bind(now),
@@ -299,6 +365,27 @@ export function mapCommunityItem(
               : "当前仅展示文件变更统计；点击“获取代码修改”后统一获取可查看的代码内容。",
         }
       : storedDiff;
+  const domainAssessment = parseJson<Record<string, any>>(
+    row.domain_evidence_json,
+    {
+      domain: row.domain,
+      source: row.domain_source || "text",
+      confidence: Number(row.domain_confidence ?? 0),
+      confidenceLabel:
+        Number(row.domain_confidence ?? 0) >= 0.78
+          ? "high"
+          : Number(row.domain_confidence ?? 0) >= 0.52
+            ? "medium"
+            : "low",
+      matchedPaths: [],
+      matchedTerms: [],
+      scores: [],
+    },
+  );
+  const reviewSignal =
+    row.kind === "pr"
+      ? parseJson<Record<string, any> | null>(row.review_signal_json, null)
+      : null;
 
   return {
     id: row.id,
@@ -316,9 +403,19 @@ export function mapCommunityItem(
     aiSummary: row.ai_summary,
     statusText: row.status_text,
     important: Boolean(row.important),
+    createdAt: row.created_at,
     updatedAt: row.updated_at,
     mergedAt: row.merged_at,
+    closedAt: row.closed_at,
+    isDraft: Boolean(row.is_draft),
+    summarySource: row.summary_source || "excerpt",
+    summaryUpdatedAt: row.summary_updated_at,
+    lastEventType: row.last_event_type ?? null,
+    lastEventAt: row.last_event_at ?? null,
     fetchedAt: row.fetched_at,
+    domainAssessment,
+    reviewSignal,
+    reviewSignalUpdatedAt: row.review_signal_updated_at ?? null,
     diff,
   };
 }

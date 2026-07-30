@@ -1,4 +1,4 @@
-import { createDevelopmentSession, requireUser } from "./auth";
+import { createTrustedDevelopmentSession, requireUser } from "./auth";
 import { encryptCredential } from "./credentials";
 import { first, query, run, type WorkerEnv } from "./db";
 import {
@@ -193,10 +193,11 @@ async function switchAccount(
     [accountId],
   );
   if (!account) throw new HttpError(404, "账户不存在");
-  const cookie = await createDevelopmentSession(
+  const cookie = await createTrustedDevelopmentSession(
     env,
     account.email,
     account.display_name,
+    new URL(request.url).protocol === "https:",
   );
   return json(
     { ok: true },

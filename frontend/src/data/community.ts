@@ -29,6 +29,13 @@ export const domainOptions = [
   "Attention",
   "CI / Infra",
   "Distributed",
+  "Quantization",
+  "Serving / API",
+  "Model Support",
+  "Platform / Hardware",
+  "Documentation",
+  "Tests",
+  "Other",
 ];
 
 export const communityItems: CommunityItem[] = [

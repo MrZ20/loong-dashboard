@@ -5,9 +5,11 @@ import type {
   ChatMessage,
   ChatThread,
   CommunityItem,
+  CrossRepoImpact,
   DomainMapApi,
   RepositoryMeta,
   TechnicalDocument,
+  TodaySummary,
   UserAccount,
 } from "../types";
 
@@ -66,11 +68,26 @@ function mapCommunityItem(item: any): CommunityItem {
     statusText: item.statusText,
     domain: item.domain,
     summary: item.aiSummary,
+    summarySource: item.summarySource === "ai" ? "ai" : "excerpt",
+    summaryUpdatedAt: item.summaryUpdatedAt ?? null,
     body: item.bodyMd,
     bodyMd: item.bodyMd,
     htmlUrl: item.htmlUrl,
     comments: Number(item.comments ?? 0),
     important: Boolean(item.important),
+    lastEventType: item.lastEventType ?? null,
+    lastEventAt: item.lastEventAt ?? null,
+    domainAssessment: item.domainAssessment ?? {
+      domain: item.domain,
+      source: "text",
+      confidence: 0,
+      confidenceLabel: "low",
+      matchedPaths: [],
+      matchedTerms: [],
+      scores: [],
+    },
+    reviewSignal: item.reviewSignal ?? null,
+    reviewSignalUpdatedAt: item.reviewSignalUpdatedAt ?? null,
     diff: item.diff ?? undefined,
     deepAnalysis: {
       overview: "",
@@ -100,10 +117,10 @@ export const api = {
 
   me: () => apiFetch<{ user: AuthUser }>("/api/auth/me"),
 
-  devLogin: (email: string, displayName: string) =>
+  devLogin: (email: string, displayName: string, password: string) =>
     apiFetch<{ ok: boolean }>("/api/auth/dev-login", {
       method: "POST",
-      body: JSON.stringify({ email, displayName }),
+      body: JSON.stringify({ email, displayName, password }),
     }),
 
   logout: () =>
@@ -119,7 +136,9 @@ export const api = {
         description:
           repo.id === "vllm"
             ? "高吞吐大模型推理与服务引擎"
-            : "vLLM 的 Ascend NPU 设备插件",
+            : repo.id === "vllm-ascend"
+              ? "vLLM 的 Ascend NPU 设备插件"
+              : `${repo.owner}/${repo.name}`,
         stars: "",
         openPulls: Number(repo.openPulls ?? 0),
         openIssues: Number(repo.openIssues ?? 0),
@@ -130,8 +149,35 @@ export const api = {
   },
 
   syncRepository: (repo: string) =>
-    apiFetch<{ run: unknown }>(`/api/repositories/${encodeURIComponent(repo)}/sync`, {
+    apiFetch<{
+      run: {
+        pulls: number;
+        issues: number;
+        capturedEvents: number;
+        analyzed: number;
+        warning?: string;
+        finishedAt: string;
+      };
+    }>(`/api/repositories/${encodeURIComponent(repo)}/sync`, {
       method: "POST",
+    }),
+
+  today: async (repo: string) => {
+    const result = await apiFetch<{ summary: TodaySummary }>(
+      `/api/today?repo=${encodeURIComponent(repo)}`,
+    );
+    return result.summary;
+  },
+
+  impacts: async () => {
+    const result = await apiFetch<{ impacts: CrossRepoImpact[] }>("/api/impacts");
+    return result.impacts;
+  },
+
+  updateImpactStatus: (id: string, status: string) =>
+    apiFetch<{ ok: boolean }>(`/api/impacts/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
     }),
 
   community: async (params: Record<string, string | number | undefined> = {}) => {

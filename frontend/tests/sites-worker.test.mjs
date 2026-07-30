@@ -109,4 +109,16 @@ test("emits the files required by Sites packaging", async () => {
       import.meta.url,
     ),
   );
+  await access(
+    new URL(
+      "../dist/.openai/drizzle/0003_trusted_community_data.sql",
+      import.meta.url,
+    ),
+  );
+  await access(
+    new URL(
+      "../dist/.openai/drizzle/0004_review_signals_and_file_domains.sql",
+      import.meta.url,
+    ),
+  );
 });

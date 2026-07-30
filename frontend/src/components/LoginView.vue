@@ -10,11 +10,12 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  login: [email: string, displayName: string];
+  login: [email: string, displayName: string, password: string];
 }>();
 
 const email = ref("maintainer@example.com");
 const displayName = ref("Community Maintainer");
+const password = ref("");
 </script>
 
 <template>
@@ -42,7 +43,7 @@ const displayName = ref("Community Maintainer");
       <form
         v-if="mode === 'development'"
         class="login-form"
-        @submit.prevent="emit('login', email, displayName)"
+        @submit.prevent="emit('login', email, displayName, password)"
       >
         <label>
           <span>显示名称</span>
@@ -52,11 +53,20 @@ const displayName = ref("Community Maintainer");
           <span>邮箱</span>
           <input v-model="email" type="email" autocomplete="email" required />
         </label>
+        <label>
+          <span>管理员密码</span>
+          <input
+            v-model="password"
+            type="password"
+            autocomplete="current-password"
+            required
+          />
+        </label>
         <button class="button button--primary button--full" :disabled="loading">
           <Octicon :name="loading ? 'sync' : 'sign-in'" :size="15" :class="{ spinning: loading }" />
           {{ loading ? "正在登录…" : "进入本地工作台" }}
         </button>
-        <small>本地开发登录仅在 ALLOW_DEV_AUTH=true 时启用。</small>
+        <small>密码只提交给当前服务端；局域网部署前必须更换默认本地密码。</small>
       </form>
 
       <a

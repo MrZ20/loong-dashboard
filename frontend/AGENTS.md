@@ -25,6 +25,10 @@ Before making substantial visual changes, use the Product Design plugin's `get-c
 - AI API tokens configured in Settings stay server-side, are encrypted at rest, and are never returned to the browser. Each account may store and switch among several OpenAI-compatible providers; the environment-variable OpenAI-compatible provider remains a non-deletable debugging option.
 - The desktop sidebar can collapse to an icon-only rail without changing the mobile drawer behavior. Every navigation and settings icon must remain visible in the collapsed state, and the expand/collapse control must stay prominent on the sidebar edge with an unambiguous directional icon.
 - Cross-repository impact statuses that imply a final human decision, especially “已适配” and “不适用”, must remain human-confirmed rather than being set automatically by AI.
+- Production-like local data starts empty: demo seeds are opt-in, excerpts must be labeled as excerpts, and only successful model output may be labeled as an AI summary.
+- “Today” means the Beijing natural day and is calculated from persisted GitHub state events. Duplicate observations of the same transition must not inflate the visible counts.
+- Local/LAN authentication requires an administrator password. Local-auth mode must ignore hosting identity headers, and credentials must stay server-side.
+- Cross-repository impact records are generated from synchronized items and stable architecture mappings; rule-generated confidence remains visually distinct from human-confirmed adaptation status.
 - The interface supports two complete visual themes without changing information architecture: a RecehTok-inspired dark theme with deep indigo surfaces and cyan/violet emphasis, and a Purity UI-inspired light theme with pale canvas, white rounded cards, teal accents, and soft shadows.
 
 When implementing from a selected generated mock, treat that image as the source of truth for layout, component anatomy, density, spacing, color, typography, visible content, and hierarchy.

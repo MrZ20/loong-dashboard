@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import type { RepositoryId } from "../types";
+import type { RepositoryId, TodaySummary } from "../types";
 import Octicon from "./Octicon.vue";
 
 defineProps<{
   repo: RepositoryId;
+  summary?: TodaySummary | null;
+  loading?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -19,25 +21,21 @@ const emit = defineEmits<{
       </span>
       <div>
         <div class="insight-banner__label">
-          AI 今日速览
-          <span>07.30</span>
+          今日事件速览
+          <span>{{ summary?.date.slice(5).replace("-", ".") || "北京时间" }}</span>
         </div>
-        <p v-if="repo === 'vllm-ascend'">
-          FusedMoE 与 MRV2 是今日变化中心；1 项性能回归需要优先跟进，另有 2 个上游改动可能影响 Ascend 适配。
-        </p>
-        <p v-else>
-          调度器公平性与设备能力注册是今日重点；2 个上游架构变化值得 Ascend 侧提前评估。
-        </p>
+        <p v-if="loading">正在读取北京时间今日事件…</p>
+        <p v-else>{{ summary?.headline || `${repo} 尚未生成今日事件摘要。` }}</p>
       </div>
     </div>
 
     <div class="insight-banner__signals">
       <div>
-        <strong>3</strong>
+        <strong>{{ summary?.importantChanges ?? 0 }}</strong>
         <span>重要变化</span>
       </div>
       <div>
-        <strong>2</strong>
+        <strong>{{ summary?.riskCount ?? 0 }}</strong>
         <span>需关注风险</span>
       </div>
     </div>

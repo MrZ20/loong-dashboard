@@ -184,7 +184,7 @@ export async function analyzeCommunityItem(
     fallback: string;
   },
 ) {
-  const system = `你是 vLLM 社区代码评审助手。基于标题、PR/Issue Markdown 正文和完整 unified diff 输出中文 Markdown 深度分析。
+  const system = `你是 vLLM 社区代码评审助手。基于标题、PR/Issue Markdown 正文，以及当前请求中提供的变更统计或 unified diff 输出中文 Markdown 深度分析。
 必须包含：改动目的、实现机制、代码路径、兼容性影响、潜在风险、测试缺口、建议动作。
 如果证据不足，明确写“待确认”，不要编造未出现的文件或行为。`;
   return callAI(
@@ -202,12 +202,116 @@ ${input.prompt}
 正文：
 ${input.bodyMd.slice(0, 40_000)}
 
-完整 Diff：
+可用代码变更证据：
 ${input.diffText.slice(0, 120_000)}`,
       },
     ],
     input.fallback,
   );
+}
+
+const SUMMARY_DOMAINS = new Set([
+  "Model Runner",
+  "FusedMoE",
+  "Scheduler",
+  "Attention",
+  "CI / Infra",
+  "Distributed",
+  "Other",
+]);
+
+function extractJsonArray(content: string) {
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
+  const candidate = fenced || content;
+  const start = candidate.indexOf("[");
+  const end = candidate.lastIndexOf("]");
+  if (start < 0 || end <= start) return [];
+  try {
+    const parsed = JSON.parse(candidate.slice(start, end + 1));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function summarizeCommunityBatch(
+  env: WorkerEnv,
+  input: {
+    userId: string;
+    language: "zh" | "en" | "bilingual";
+    items: Array<{
+      id: string;
+      kind: "pr" | "issue";
+      state: string;
+      title: string;
+      bodyMd: string;
+    }>;
+  },
+) {
+  if (!input.items.length) {
+    return { summaries: [], provider: "fallback" as const, providerName: "" };
+  }
+  const languageInstruction =
+    input.language === "en"
+      ? "Write summary and reason in concise English."
+      : input.language === "bilingual"
+        ? "Write summary as concise Chinese followed by concise English."
+        : "摘要和理由使用简洁中文。";
+  const result = await callAI(
+    env,
+    input.userId,
+    [
+      {
+        role: "system",
+        content: `你是 vLLM 社区信息分流助手。只输出 JSON 数组，不要 Markdown。
+每项必须包含 id、summary、domain、important、reason。
+summary 用一到两句话说明条目具体在做什么以及可能影响什么，不要复述模板问题。
+domain 只能是 Model Runner、FusedMoE、Scheduler、Attention、CI / Infra、Distributed、Other。
+important 仅在回归、安全、破坏性兼容、关键架构、关键性能或明显影响 vLLM-Ascend Review 时为 true。
+${languageInstruction}`,
+      },
+      {
+        role: "user",
+        content: JSON.stringify(
+          input.items.map((item) => ({
+            ...item,
+            bodyMd: item.bodyMd.slice(0, 8_000),
+          })),
+        ),
+      },
+    ],
+    "[]",
+  );
+  if (result.provider !== "api") {
+    return {
+      summaries: [],
+      provider: result.provider,
+      providerName: result.providerName,
+    };
+  }
+  const requestedIds = new Set(input.items.map((item) => item.id));
+  const summaries = extractJsonArray(result.content).flatMap((item: any) => {
+    const id = typeof item?.id === "string" ? item.id : "";
+    const summary = typeof item?.summary === "string" ? item.summary.trim() : "";
+    const domain =
+      typeof item?.domain === "string" && SUMMARY_DOMAINS.has(item.domain)
+        ? item.domain
+        : "Other";
+    if (!requestedIds.has(id) || !summary) return [];
+    return [{
+      id,
+      summary: summary.slice(0, 500),
+      domain,
+      important: item.important === true,
+      reason:
+        typeof item.reason === "string" ? item.reason.trim().slice(0, 300) : "",
+    }];
+  });
+  return {
+    summaries,
+    provider: result.provider,
+    providerName: result.providerName,
+  };
 }
 
 export async function answerChat(

@@ -15,7 +15,9 @@ migrations_dir = "drizzle"
 
 [vars]
 ALLOW_DEV_AUTH = "true"
+LOCAL_ADMIN_PASSWORD = "loongboard-local-development-only"
 SESSION_SECRET = "loongboard-local-development-session-secret"
 CREDENTIALS_ENCRYPTION_KEY = "loongboard-local-development-credentials-key"
+SEED_DEMO_DATA = "false"
 AI_API_MODE = "responses"
 AI_MODEL = "gpt-5-mini"

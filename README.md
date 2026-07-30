@@ -57,8 +57,9 @@ npm run dev:service
 ```
 
 The full service listens on `http://127.0.0.1:4174`. On first request it creates
-and seeds the local D1 database. The seed data keeps the interface usable before
-the first GitHub synchronization.
+the local D1 schema and the two configured repository records. Production-like
+development starts empty; use the repository sync action to collect real GitHub
+data. Sample records are inserted only when `SEED_DEMO_DATA=true`.
 
 For frontend-only visual work, `npm run dev` is still available, but API-backed
 features require `npm run dev:service`.
@@ -77,13 +78,21 @@ variables in the deployment environment:
 | `CREDENTIALS_ENCRYPTION_KEY` | For saved AI providers | Encrypts per-account AI tokens stored in D1 |
 | `GITHUB_TOKEN` | Recommended | Higher rate limits and private-repository access |
 | `ALLOW_DEV_AUTH` | Local only | Enables the signed local development session |
+| `LOCAL_ADMIN_PASSWORD` | Local/LAN only | Required password for the local administrator login |
 | `SESSION_SECRET` | Local only | Signs the development session cookie |
+| `SEED_DEMO_DATA` | No | Enables sample records only in an isolated demo |
 
 The environment-variable OpenAI-compatible configuration remains visible as a
 built-in provider in Settings. Users can also save several per-account
 OpenAI-compatible providers and choose one as active. If the selected provider
 has no usable credential, AI endpoints return an explicit, deterministic
 fallback document instead of pretending that a model was called.
+
+The checked-in `wrangler.toml` password is only for the loopback development
+server. Before listening on a LAN address, replace `LOCAL_ADMIN_PASSWORD`,
+`SESSION_SECRET`, and `CREDENTIALS_ENCRYPTION_KEY` with independent strong
+secrets. Local-auth mode ignores hosting identity headers so LAN clients cannot
+impersonate users by sending those headers directly.
 
 ## Validation
 
@@ -98,3 +107,11 @@ The production build bundles the Worker and copies the D1 migration into the
 Sites artifact. GitHub raw diff is preferred; if GitHub times out, the service
 falls back to the paginated files API so every changed file remains visible and
 marks any binary or provider-truncated patch explicitly.
+
+## Legacy root prototype
+
+The repository root also contains the earlier Python-backed prototype. Its
+feature backlog remains in [docs/FEATURES.md](docs/FEATURES.md), and it can be
+started with the root-level `npm run dev` after installing
+`requirements.txt` in `.venv`. The maintained deployable application described
+above lives in `frontend/`.

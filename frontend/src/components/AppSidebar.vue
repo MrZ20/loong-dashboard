@@ -11,6 +11,8 @@ const props = defineProps<{
   watchlistCount: number;
   impactCount: number;
   documentCount: number;
+  focusDomain: string;
+  focusCount: number;
   userName: string;
   userEmail: string;
   open: boolean;
@@ -210,9 +212,9 @@ function workspaceCount(view: Exclude<AppView, AppTab>) {
       </span>
       <div>
         <span>今日关注领域</span>
-        <strong>FusedMoE</strong>
+        <strong>{{ focusDomain }}</strong>
       </div>
-      <span class="sidebar__focus-count">8</span>
+      <span class="sidebar__focus-count">{{ focusCount }}</span>
     </button>
 
     <div class="sidebar__account" :title="collapsed ? `${userName} · ${userEmail}` : undefined">
@@ -233,7 +235,7 @@ function workspaceCount(view: Exclude<AppView, AppTab>) {
         <Octicon name="gear" :size="16" />
         <span class="sidebar__footer-label">设置</span>
       </button>
-      <span class="prototype-chip">原型数据</span>
+      <span class="prototype-chip">服务端数据</span>
     </div>
   </aside>
 </template>

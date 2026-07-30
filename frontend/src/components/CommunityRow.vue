@@ -25,6 +25,29 @@ const iconName = computed(() => {
 });
 
 const stateClass = computed(() => `community-row__state--${props.item.state}`);
+const summaryLabel = computed(() =>
+  props.item.summarySource === "ai" ? "AI 摘要" : "正文摘录",
+);
+const effectiveStatus = computed(() => {
+  if (props.item.lastEventType === "reopened") return "Reopened";
+  if (props.item.lastEventType === "ready_for_review") return "Ready for review";
+  return props.item.statusText;
+});
+const reviewIcon = computed(() => {
+  const action = props.item.reviewSignal?.action;
+  if (action === "ready") return "check-circle";
+  if (action === "attention") return "alert";
+  if (action === "blocked") return "x-circle";
+  if (action === "waiting") return "clock";
+  return "info";
+});
+const ciLabel = computed(() => {
+  const status = props.item.reviewSignal?.ciStatus;
+  if (status === "success") return "CI 通过";
+  if (status === "failure") return "CI 失败";
+  if (status === "pending") return "CI 运行中";
+  return "";
+});
 </script>
 
 <template>
@@ -46,6 +69,15 @@ const stateClass = computed(() => `community-row__state--${props.item.state}`);
           重要
         </span>
         <span class="domain-badge" :data-domain="item.domain">{{ item.domain }}</span>
+        <span
+          v-if="item.kind === 'pr' && item.reviewSignal"
+          class="review-signal-badge"
+          :data-action="item.reviewSignal.action"
+          :title="item.reviewSignal.summary"
+        >
+          <Octicon :name="reviewIcon" :size="12" />
+          {{ item.reviewSignal.label }}
+        </span>
       </div>
 
       <p class="community-row__meta">
@@ -53,13 +85,32 @@ const stateClass = computed(() => `community-row__state--${props.item.state}`);
         <span>{{ item.state === "merged" ? "合入于" : "更新于" }} {{ item.time }}</span>
         <span>by {{ item.author }}</span>
         <span class="meta-divider">·</span>
-        <span>{{ item.statusText }}</span>
+        <span>{{ effectiveStatus }}</span>
+        <template v-if="item.kind === 'pr' && item.reviewSignal">
+          <span v-if="ciLabel" class="meta-divider">·</span>
+          <span
+            v-if="ciLabel"
+            class="review-meta"
+            :data-status="item.reviewSignal.ciStatus"
+          >{{ ciLabel }}</span>
+          <span
+            v-if="item.reviewSignal.mergeability === 'conflicting'"
+            class="review-meta"
+            data-status="failure"
+          >· 存在冲突</span>
+          <span v-else-if="item.reviewSignal.mergeability === 'mergeable'" class="review-meta">
+            · 可合并
+          </span>
+          <span v-if="item.reviewSignal.behindBy && item.reviewSignal.behindBy > 0" class="review-meta">
+            · 落后 {{ item.reviewSignal.behindBy }} commits
+          </span>
+        </template>
       </p>
 
       <div class="community-row__summary">
         <span class="summary-label">
           <Octicon name="copilot" :size="13" />
-          AI 摘要
+          {{ summaryLabel }}
         </span>
         <p>{{ item.summary }}</p>
       </div>
