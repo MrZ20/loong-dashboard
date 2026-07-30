@@ -9,7 +9,8 @@ export type AppView =
   | "impact"
   | "domains"
   | "docs"
-  | "chat";
+  | "chat"
+  | "settings";
 export type ThemeMode = "light" | "dark";
 export type ImpactLevel = "low" | "medium" | "high" | "critical";
 export type AIInsightKind = "risk" | "upstream" | "trend" | "collaboration";
@@ -33,8 +34,14 @@ export interface DiffStat {
     patch?: string;
   }>;
   raw?: string;
-  source?: "raw-diff" | "files-api";
+  source?:
+    | "pull-metadata"
+    | "graphql-files"
+    | "files-api-stat"
+    | "raw-diff"
+    | "files-api";
   complete?: boolean;
+  statsOnly?: boolean;
   notice?: string;
 }
 
@@ -46,6 +53,7 @@ export interface CommunityItem {
   title: string;
   author: string;
   time: string;
+  updatedAt?: string;
   statusText: string;
   domain: string;
   summary: string;
@@ -178,6 +186,41 @@ export interface ChatMessage {
   contentMd: string;
   context?: Record<string, unknown>;
   createdAt: string;
+}
+
+export interface ChatThread {
+  id: string;
+  title: string;
+  context?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UserAccount {
+  id: string;
+  email: string;
+  displayName: string;
+  avatarUrl: string | null;
+  role: string;
+  organization: string;
+  bio: string;
+  current: boolean;
+  lastSeenAt: string;
+}
+
+export interface AIProviderConfig {
+  id: string;
+  name: string;
+  providerType: "openai-compatible";
+  baseUrl: string;
+  apiMode: "responses" | "chat_completions";
+  model: string;
+  tokenConfigured: boolean;
+  tokenHint: string;
+  active: boolean;
+  builtIn: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface DomainMapApi {

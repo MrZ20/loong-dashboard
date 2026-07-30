@@ -14,6 +14,7 @@ import InsightBanner from "./components/InsightBanner.vue";
 import LoginView from "./components/LoginView.vue";
 import Octicon from "./components/Octicon.vue";
 import RepositoryHeader from "./components/RepositoryHeader.vue";
+import SettingsView from "./components/SettingsView.vue";
 import TechnicalDocsView from "./components/TechnicalDocsView.vue";
 import WatchlistView from "./components/WatchlistView.vue";
 import {
@@ -33,6 +34,7 @@ import type {
   RepositoryMeta,
   RepositoryId,
   ThemeMode,
+  UserAccount,
 } from "./types";
 
 const activeRepo = ref<RepositoryId>("vllm-ascend");
@@ -44,6 +46,9 @@ const selectedItem = ref<CommunityItem | null>(null);
 const refreshing = ref(false);
 const listLoading = ref(false);
 const sidebarOpen = ref(false);
+const sidebarCollapsed = ref(
+  window.localStorage.getItem("loongboard-sidebar-collapsed") === "true",
+);
 const toast = ref("");
 const authUser = ref<AuthUser | null>(null);
 const authMode = ref<"development" | "chatgpt">("chatgpt");
@@ -58,6 +63,8 @@ const watchedKeys = ref<Set<string>>(new Set());
 const documentCount = ref(0);
 const detailAnalysis = ref<AnalysisDocument | null>(null);
 const detailAnalyzing = ref(false);
+const detailDiffLoading = ref(false);
+let detailDiffRequestId = 0;
 const { setPageContext } = useAIChat();
 const storedTheme = window.localStorage.getItem("loongboard-theme");
 const theme = ref<ThemeMode>(
@@ -131,6 +138,12 @@ const workspaceHeader = computed(() => {
       icon: "comment-discussion",
       badge: "上下文问答",
     },
+    settings: {
+      owner: "个人空间",
+      title: "设置",
+      icon: "gear",
+      badge: "账户与 AI",
+    },
   };
   return contexts[activeView.value] ?? null;
 });
@@ -138,10 +151,16 @@ const workspaceHeader = computed(() => {
 const filteredItems = computed(() => {
   const kind = activeView.value === "issues" ? "issue" : "pr";
   const query = searchQuery.value.trim().toLowerCase();
+  const recentSnapshot = communityData.value
+    .filter((item) => item.repo === activeRepo.value && item.kind === kind)
+    .sort(
+      (left, right) =>
+        new Date(right.updatedAt || 0).valueOf() -
+        new Date(left.updatedAt || 0).valueOf(),
+    )
+    .slice(0, 30);
 
-  return communityData.value.filter((item) => {
-    const matchesRepo = item.repo === activeRepo.value;
-    const matchesKind = item.kind === kind;
+  return recentSnapshot.filter((item) => {
     const matchesDomain =
       selectedDomain.value === "全部领域" || item.domain === selectedDomain.value;
     const matchesState =
@@ -156,7 +175,7 @@ const filteredItems = computed(() => {
       item.author.toLowerCase().includes(query) ||
       String(item.id).includes(query);
 
-    return matchesRepo && matchesKind && matchesDomain && matchesState && matchesQuery;
+    return matchesDomain && matchesState && matchesQuery;
   });
 });
 
@@ -165,6 +184,8 @@ const activeKindLabel = computed(() =>
 );
 
 watch([activeRepo, activeView], () => {
+  detailDiffRequestId += 1;
+  detailDiffLoading.value = false;
   selectedItem.value = null;
   detailAnalysis.value = null;
   sidebarOpen.value = false;
@@ -184,6 +205,10 @@ watch(
   },
   { immediate: true },
 );
+
+watch(sidebarCollapsed, (value) => {
+  window.localStorage.setItem("loongboard-sidebar-collapsed", String(value));
+});
 
 watch(
   [activeView, activeRepo, selectedItem],
@@ -304,6 +329,15 @@ function showToast(message: string) {
   }, 2_200);
 }
 
+function updateCurrentUser(profile: UserAccount) {
+  if (!authUser.value) return;
+  authUser.value = {
+    ...authUser.value,
+    displayName: profile.displayName,
+  };
+  showToast("账户资料已更新");
+}
+
 async function toggleWatch(item: CommunityItem) {
   const key = communityItemKey(item);
   const next = new Set(watchedKeys.value);
@@ -324,6 +358,8 @@ async function toggleWatch(item: CommunityItem) {
 }
 
 async function selectCommunityItem(item: CommunityItem) {
+  detailDiffRequestId += 1;
+  detailDiffLoading.value = false;
   selectedItem.value = item;
   detailAnalysis.value = null;
   try {
@@ -356,6 +392,56 @@ async function analyzeSelectedItem(item: CommunityItem) {
   }
 }
 
+async function loadSelectedDiff(item: CommunityItem) {
+  if (item.kind !== "pr" || detailDiffLoading.value) return;
+  const requestId = ++detailDiffRequestId;
+  const itemKey = communityItemKey(item);
+  detailDiffLoading.value = true;
+  try {
+    const result = await api.communityDiffFiles(item.repo, item.id);
+    if (
+      requestId === detailDiffRequestId &&
+      selectedItem.value &&
+      communityItemKey(selectedItem.value) === itemKey
+    ) {
+      const current = selectedItem.value;
+      const loadedEntries = new Map(
+        result.entries.map((entry) => [entry.path, entry]),
+      );
+      const skippedNotice =
+        result.skippedLarge > 0
+          ? `；${result.skippedLarge} 个超过 1000 行的文件已跳过，请前往 GitHub 查看`
+          : "";
+      selectedItem.value = {
+        ...current,
+        diff: current.diff
+          ? {
+              ...current.diff,
+              statsOnly: false,
+              entries: current.diff.entries.map((candidate) =>
+                loadedEntries.get(candidate.path) ?? candidate,
+              ),
+              notice: `已统一获取 ${result.entries.length} 个文件的代码修改${skippedNotice}。`,
+            }
+          : current.diff,
+      };
+      showToast(`已统一获取 ${result.entries.length} 个文件的代码修改`);
+    }
+  } catch (cause) {
+    if (requestId === detailDiffRequestId) {
+      showToast(cause instanceof ApiError ? cause.message : "代码修改获取失败");
+    }
+  } finally {
+    if (requestId === detailDiffRequestId) detailDiffLoading.value = false;
+  }
+}
+
+function closeDetail() {
+  detailDiffRequestId += 1;
+  detailDiffLoading.value = false;
+  selectedItem.value = null;
+}
+
 onMounted(initializeAuth);
 </script>
 
@@ -375,7 +461,12 @@ onMounted(initializeAuth);
     />
   </div>
 
-  <div v-else class="app-shell" :data-theme="theme">
+  <div
+    v-else
+    class="app-shell"
+    :class="{ 'app-shell--sidebar-collapsed': sidebarCollapsed }"
+    :data-theme="theme"
+  >
     <AppSidebar
       :repositories="repositoryData"
       :active-repo="activeRepo"
@@ -387,8 +478,10 @@ onMounted(initializeAuth);
       :user-name="authUser.displayName"
       :user-email="authUser.email"
       :open="sidebarOpen"
+      :collapsed="sidebarCollapsed"
       @update:repo="changeRepo"
       @update:view="changeView"
+      @update:collapsed="sidebarCollapsed = $event"
       @logout="logout"
       @close="sidebarOpen = false"
     />
@@ -424,6 +517,10 @@ onMounted(initializeAuth);
           @update:count="documentCount = $event"
         />
         <AIChatView v-else-if="activeView === 'chat'" />
+        <SettingsView
+          v-else-if="activeView === 'settings'"
+          @update:user="updateCurrentUser"
+        />
         <DailyAnalysis v-else-if="activeView === 'analysis'" :repo="activeRepo" />
 
         <template v-else>
@@ -491,9 +588,11 @@ onMounted(initializeAuth);
       :watched="watchedKeys.has(communityItemKey(selectedItem))"
       :analysis-md="detailAnalysis?.contentMd"
       :analyzing="detailAnalyzing"
+      :diff-loading="detailDiffLoading"
       @toggle-watch="toggleWatch"
       @analyze="analyzeSelectedItem"
-      @close="selectedItem = null"
+      @load-diff="loadSelectedDiff"
+      @close="closeDetail"
     />
 
     <AIChatDock />

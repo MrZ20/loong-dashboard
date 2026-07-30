@@ -134,7 +134,6 @@ export async function getAuthenticatedUser(
     `INSERT INTO users(id, email, display_name, created_at, last_seen_at)
      VALUES(?, ?, ?, ?, ?)
      ON CONFLICT(email) DO UPDATE SET
-       display_name = excluded.display_name,
        last_seen_at = excluded.last_seen_at`,
     [id, email, displayName, now, now],
   );
@@ -142,7 +141,7 @@ export async function getAuthenticatedUser(
   return {
     id,
     email,
-    displayName,
+    displayName: existing?.display_name ?? displayName,
     avatarUrl: existing?.avatar_url ?? null,
     mode,
   };

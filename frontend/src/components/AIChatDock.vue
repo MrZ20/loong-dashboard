@@ -1,12 +1,17 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useAIChat } from "../composables/useAIChat";
 import AIChatMessages from "./AIChatMessages.vue";
 import Octicon from "./Octicon.vue";
 
-const { state, initialize, send, openWithSelection } = useAIChat();
+const { state, initialize, createThread, send, openWithSelection } = useAIChat();
 const popover = ref({ visible: false, x: 0, y: 0, text: "", context: "" });
 const messageArea = ref<HTMLElement | null>(null);
+const currentThreadTitle = computed(
+  () =>
+    state.threads.find((thread) => thread.id === state.threadId)?.title ||
+    "LoongBoard AI",
+);
 
 function captureSelection(event: MouseEvent) {
   const target = event.target as HTMLElement | null;
@@ -80,7 +85,16 @@ onBeforeUnmount(() => document.removeEventListener("mouseup", captureSelection))
     <section v-else class="ai-chat-panel">
       <header>
         <span class="ai-chat-panel__icon"><Octicon name="copilot" :size="18" /></span>
-        <div><strong>LoongBoard AI</strong><small>基于当前社区上下文</small></div>
+        <div><strong>{{ currentThreadTitle }}</strong><small>基于当前社区上下文</small></div>
+        <button
+          class="icon-button"
+          aria-label="新建对话"
+          title="新建对话"
+          :disabled="state.threadBusy"
+          @click="createThread()"
+        >
+          <Octicon name="plus" :size="15" />
+        </button>
         <button class="icon-button" aria-label="收起 AI 助手" @click="state.open = false">
           <Octicon name="dash" :size="17" />
         </button>

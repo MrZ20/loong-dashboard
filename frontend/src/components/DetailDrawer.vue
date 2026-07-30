@@ -10,12 +10,14 @@ const props = defineProps<{
   watched: boolean;
   analysisMd?: string;
   analyzing?: boolean;
+  diffLoading?: boolean;
 }>();
 
 const emit = defineEmits<{
   close: [];
   "toggle-watch": [item: CommunityItem];
   analyze: [item: CommunityItem];
+  "load-diff": [item: CommunityItem];
 }>();
 
 const stateLabel = computed(() => {
@@ -96,12 +98,32 @@ const stateLabel = computed(() => {
           </div>
         </section>
 
-        <section v-if="item.diff" class="detail-section">
+        <section v-if="item.kind === 'pr'" class="detail-section">
           <div class="detail-section__title">
             <h3>代码修改</h3>
-            <span>{{ item.diff.files }} files changed</span>
+            <span v-if="item.diff">{{ item.diff.files }} files changed</span>
+            <span v-else>按需获取</span>
           </div>
-          <DiffViewer :diff="item.diff" />
+          <DiffViewer
+            v-if="item.diff"
+            :diff="item.diff"
+            :loading="diffLoading"
+            :github-url="item.htmlUrl || undefined"
+            @load-diff="emit('load-diff', item)"
+          />
+          <div v-else class="diff-fetch-placeholder">
+            <span>
+              <Octicon
+                :name="diffLoading ? 'sync' : 'file-diff'"
+                :size="20"
+                :class="{ spinning: diffLoading }"
+              />
+            </span>
+            <div>
+              <strong>正在准备变更统计</strong>
+              <p>详情默认只读取文件路径和增删行数，不会提前返回具体代码内容。</p>
+            </div>
+          </div>
         </section>
 
         <section class="detail-section deep-analysis">

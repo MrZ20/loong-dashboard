@@ -8,16 +8,28 @@ technical architecture maps, a Markdown knowledge base, and contextual chat.
 ## What is included
 
 - GitHub synchronization for both repositories, with a cached D1 data model.
+  Sidebar counts describe the bounded recent snapshot stored by LoongBoard,
+  rather than GitHub's repository-wide open backlog.
 - PR and Issue lists with status, AI technical-domain classification, and
   concise summaries.
-- Rendered Markdown bodies plus `diff --stat` and expandable per-file patches.
+- Rendered Markdown bodies plus on-demand `diff --stat` and expandable
+  per-file patches. Repository synchronization and initial detail reads do not
+  fetch concrete code changes; users request them explicitly from the PR view.
 - Versioned daily reports, deep PR/Issue analyses, and cross-repository AI
   insight documents.
 - A domain architecture map with a stable baseline, daily changed paths, and
   dated snapshots.
 - Categorized technical Markdown documents with an in-app editor.
-- A shared AI conversation available as a full page and as a floating window.
-  Page context and selected text can be attached to a question.
+- Persistent multi-conversation AI chat: create, resume, rename, and delete
+  threads from the full page while the floating window follows the active
+  thread. Page context and selected text can be attached to a question.
+- Account settings with per-account profile, watchlist, chat history, and AI
+  provider selection. Local development can add and switch accounts; production
+  identity remains managed by the hosting platform.
+- Multiple encrypted OpenAI-compatible API configurations per account, with an
+  explicit active-provider switch and the environment-variable provider kept as
+  a built-in debugging option.
+- A desktop sidebar that can collapse to an icon-only rail.
 - Light and dark themes.
 
 ## Architecture
@@ -32,7 +44,9 @@ The application lives in `frontend/`:
 
 Production identity is provided by the hosting platform through authenticated
 user headers. The application never stores GitHub or AI credentials in the
-browser. Local email login is available only when `ALLOW_DEV_AUTH=true`.
+browser. User-entered AI tokens are encrypted at rest in D1 and are never
+returned by the API. Local email login and account switching are available only
+when `ALLOW_DEV_AUTH=true`.
 
 ## Local development
 
@@ -60,12 +74,16 @@ variables in the deployment environment:
 | `AI_API_BASE_URL` | No | OpenAI-compatible API base URL |
 | `AI_API_MODE` | No | `responses` or `chat_completions` |
 | `AI_MODEL` | No | Provider model name |
+| `CREDENTIALS_ENCRYPTION_KEY` | For saved AI providers | Encrypts per-account AI tokens stored in D1 |
 | `GITHUB_TOKEN` | Recommended | Higher rate limits and private-repository access |
 | `ALLOW_DEV_AUTH` | Local only | Enables the signed local development session |
 | `SESSION_SECRET` | Local only | Signs the development session cookie |
 
-If the AI credential is absent, all AI endpoints return an explicit,
-deterministic fallback document instead of pretending that a model was called.
+The environment-variable OpenAI-compatible configuration remains visible as a
+built-in provider in Settings. Users can also save several per-account
+OpenAI-compatible providers and choose one as active. If the selected provider
+has no usable credential, AI endpoints return an explicit, deterministic
+fallback document instead of pretending that a model was called.
 
 ## Validation
 

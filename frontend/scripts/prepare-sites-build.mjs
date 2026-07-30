@@ -16,6 +16,10 @@ for (const file of [index, worker, hosting]) {
 }
 
 rmSync(path.join(dist, "server"), { recursive: true, force: true });
+rmSync(path.join(dist, ".openai", "drizzle"), {
+  recursive: true,
+  force: true,
+});
 mkdirSync(path.join(dist, "server"), { recursive: true });
 mkdirSync(path.join(dist, ".openai"), { recursive: true });
 await build({

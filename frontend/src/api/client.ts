@@ -1,11 +1,14 @@
 import type {
   AnalysisDocument,
+  AIProviderConfig,
   AuthUser,
   ChatMessage,
+  ChatThread,
   CommunityItem,
   DomainMapApi,
   RepositoryMeta,
   TechnicalDocument,
+  UserAccount,
 } from "../types";
 
 export class ApiError extends Error {
@@ -59,6 +62,7 @@ function mapCommunityItem(item: any): CommunityItem {
     title: item.title,
     author: item.author,
     time: relativeTime(item.updatedAt),
+    updatedAt: item.updatedAt,
     statusText: item.statusText,
     domain: item.domain,
     summary: item.aiSummary,
@@ -145,16 +149,32 @@ export const api = {
     repo: string,
     kind: "pr" | "issue",
     number: number,
-    refreshDiff = false,
   ) => {
-    const suffix = refreshDiff ? "?refresh_diff=1" : "";
     const result = await apiFetch<{ item: any; analyses: AnalysisDocument[] }>(
-      `/api/community/${encodeURIComponent(repo)}/${kind}/${number}${suffix}`,
+      `/api/community/${encodeURIComponent(repo)}/${kind}/${number}`,
     );
     return {
       item: mapCommunityItem(result.item),
       analyses: result.analyses,
     };
+  },
+
+  communityDiffFiles: async (
+    repo: string,
+    number: number,
+  ) => {
+    const result = await apiFetch<{
+      entries: Array<{
+        path: string;
+        additions: number;
+        deletions: number;
+        patch: string;
+      }>;
+      skippedLarge: number;
+    }>(
+      `/api/community/${encodeURIComponent(repo)}/pr/${number}/diff-files`,
+    );
+    return result;
   },
 
   analyzeCommunityItem: (
@@ -254,15 +274,24 @@ export const api = {
     ),
 
   createThread: (title = "新对话", context: Record<string, unknown> = {}) =>
-    apiFetch<{ thread: { id: string; title: string } }>("/api/chat/threads", {
+    apiFetch<{ thread: ChatThread }>("/api/chat/threads", {
       method: "POST",
       body: JSON.stringify({ title, context }),
     }),
 
   threads: () =>
-    apiFetch<{ threads: Array<{ id: string; title: string; updatedAt: string }> }>(
-      "/api/chat/threads",
+    apiFetch<{ threads: ChatThread[] }>("/api/chat/threads"),
+
+  renameThread: (threadId: string, title: string) =>
+    apiFetch<{ thread: ChatThread }>(
+      `/api/chat/threads/${encodeURIComponent(threadId)}`,
+      { method: "PUT", body: JSON.stringify({ title }) },
     ),
+
+  deleteThread: (threadId: string) =>
+    apiFetch<void>(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
+      method: "DELETE",
+    }),
 
   messages: (threadId: string) =>
     apiFetch<{ messages: ChatMessage[] }>(
@@ -281,4 +310,80 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+
+  profile: () =>
+    apiFetch<{ profile: UserAccount; mode: AuthUser["mode"] }>(
+      "/api/settings/profile",
+    ),
+
+  updateProfile: (input: {
+    displayName: string;
+    role: string;
+    organization: string;
+    bio: string;
+  }) =>
+    apiFetch<{ profile: UserAccount }>("/api/settings/profile", {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+
+  accounts: () =>
+    apiFetch<{ accounts: UserAccount[]; canAdd: boolean }>(
+      "/api/settings/accounts",
+    ),
+
+  createAccount: (input: {
+    email: string;
+    displayName: string;
+    role?: string;
+    organization?: string;
+  }) =>
+    apiFetch<{ account: UserAccount }>("/api/settings/accounts", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  switchAccount: (accountId: string) =>
+    apiFetch<{ ok: boolean }>(
+      `/api/settings/accounts/${encodeURIComponent(accountId)}/switch`,
+      { method: "POST" },
+    ),
+
+  aiProviders: () =>
+    apiFetch<{ providers: AIProviderConfig[] }>(
+      "/api/settings/ai-providers",
+    ),
+
+  saveAIProvider: (
+    input: {
+      name: string;
+      baseUrl: string;
+      apiMode: AIProviderConfig["apiMode"];
+      model: string;
+      token?: string;
+      makeActive?: boolean;
+    },
+    id?: string,
+  ) =>
+    apiFetch<{ provider: AIProviderConfig }>(
+      id
+        ? `/api/settings/ai-providers/${encodeURIComponent(id)}`
+        : "/api/settings/ai-providers",
+      {
+        method: id ? "PUT" : "POST",
+        body: JSON.stringify(input),
+      },
+    ),
+
+  activateAIProvider: (id: string) =>
+    apiFetch<{ ok: boolean; activeProviderId: string }>(
+      `/api/settings/ai-providers/${encodeURIComponent(id)}/activate`,
+      { method: "POST" },
+    ),
+
+  deleteAIProvider: (id: string) =>
+    apiFetch<void>(
+      `/api/settings/ai-providers/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
 };

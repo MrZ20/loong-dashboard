@@ -14,11 +14,13 @@ const props = defineProps<{
   userName: string;
   userEmail: string;
   open: boolean;
+  collapsed: boolean;
 }>();
 
 const emit = defineEmits<{
   "update:repo": [value: RepositoryId];
   "update:view": [value: AppView];
+  "update:collapsed": [value: boolean];
   logout: [];
   close: [];
 }>();
@@ -62,6 +64,11 @@ function isExpanded(repo: RepositoryId) {
 }
 
 function toggleRepository(repo: RepositoryId) {
+  if (props.collapsed) {
+    emit("update:repo", repo);
+    emit("update:view", "pulls");
+    return;
+  }
   if (props.activeRepo !== repo) {
     emit("update:repo", repo);
     if (!isExpanded(repo)) expandedRepos.value.push(repo);
@@ -95,7 +102,13 @@ function workspaceCount(view: Exclude<AppView, AppTab>) {
 </script>
 
 <template>
-  <aside class="sidebar" :class="{ 'sidebar--open': open }">
+  <aside
+    class="sidebar"
+    :class="{
+      'sidebar--open': open,
+      'sidebar--collapsed': collapsed,
+    }"
+  >
     <div class="sidebar__brand">
       <span class="sidebar__mark">
         <Octicon name="telescope" :size="20" />
@@ -107,6 +120,15 @@ function workspaceCount(view: Exclude<AppView, AppTab>) {
       <button class="sidebar__close icon-button" aria-label="关闭导航" @click="emit('close')">
         <Octicon name="x" :size="18" />
       </button>
+      <button
+        class="sidebar__collapse icon-button"
+        :aria-label="collapsed ? '展开侧边栏' : '折叠侧边栏'"
+        :aria-expanded="!collapsed"
+        :title="collapsed ? '展开侧边栏' : '折叠侧边栏'"
+        @click="emit('update:collapsed', !collapsed)"
+      >
+        <Octicon :name="collapsed ? 'chevron-right' : 'chevron-left'" :size="16" />
+      </button>
     </div>
 
     <nav class="sidebar__nav" aria-label="工作台与仓库导航">
@@ -117,10 +139,11 @@ function workspaceCount(view: Exclude<AppView, AppTab>) {
           :key="item.id"
           class="sidebar-workspace__item"
           :class="{ 'sidebar-workspace__item--active': activeView === item.id }"
+          :title="collapsed ? item.label : undefined"
           @click="selectWorkspace(item.id)"
         >
           <Octicon :name="item.icon" :size="16" />
-          <span>{{ item.label }}</span>
+          <span class="sidebar-workspace__label">{{ item.label }}</span>
           <span class="sidebar-workspace__count">{{ workspaceCount(item.id) }}</span>
         </button>
       </div>
@@ -139,6 +162,7 @@ function workspaceCount(view: Exclude<AppView, AppTab>) {
         <button
           class="repo-switcher"
           :aria-expanded="isExpanded(repo.id)"
+          :title="collapsed ? repo.name : undefined"
           @click="toggleRepository(repo.id)"
         >
           <span class="repo-switcher__icon">
@@ -155,7 +179,7 @@ function workspaceCount(view: Exclude<AppView, AppTab>) {
           />
         </button>
 
-        <div v-if="isExpanded(repo.id)" class="repo-subnav">
+        <div v-if="isExpanded(repo.id) && !collapsed" class="repo-subnav">
           <button
             v-for="item in repositoryNavigation"
             :key="item.id"
@@ -191,7 +215,7 @@ function workspaceCount(view: Exclude<AppView, AppTab>) {
       <span class="sidebar__focus-count">8</span>
     </button>
 
-    <div class="sidebar__account">
+    <div class="sidebar__account" :title="collapsed ? `${userName} · ${userEmail}` : undefined">
       <span>{{ userName.slice(0, 1).toUpperCase() }}</span>
       <div><strong>{{ userName }}</strong><small>{{ userEmail }}</small></div>
       <button class="icon-button" aria-label="退出登录" title="退出登录" @click="emit('logout')">
@@ -200,9 +224,14 @@ function workspaceCount(view: Exclude<AppView, AppTab>) {
     </div>
 
     <div class="sidebar__footer">
-      <button class="sidebar__footer-button">
+      <button
+        class="sidebar__footer-button"
+        :class="{ 'sidebar__footer-button--active': activeView === 'settings' }"
+        :title="collapsed ? '设置' : undefined"
+        @click="selectWorkspace('settings')"
+      >
         <Octicon name="gear" :size="16" />
-        <span>分析配置</span>
+        <span class="sidebar__footer-label">设置</span>
       </button>
       <span class="prototype-chip">原型数据</span>
     </div>

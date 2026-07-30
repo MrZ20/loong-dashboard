@@ -15,6 +15,7 @@ export interface WorkerEnv {
   AI_MODEL?: string;
   GITHUB_TOKEN?: string;
   SESSION_SECRET?: string;
+  CREDENTIALS_ENCRYPTION_KEY?: string;
   ALLOW_DEV_AUTH?: string;
 }
 
@@ -84,6 +85,10 @@ export async function initializeDatabase(env: WorkerEnv) {
 async function seedDatabase(env: WorkerEnv) {
   const now = new Date().toISOString();
   const db = requireDb(env);
+  const seedCount = (repoId: string, kind: "pr" | "issue") =>
+    SEED_COMMUNITY_ITEMS.filter(
+      (item) => item.repoId === repoId && item.kind === kind,
+    ).length;
   const statements = [
     db
       .prepare(
@@ -92,7 +97,14 @@ async function seedDatabase(env: WorkerEnv) {
          VALUES (?, ?, ?, 1, ?, ?, 'idle', ?)
          ON CONFLICT(id) DO UPDATE SET owner = excluded.owner, name = excluded.name`,
       )
-      .bind("vllm-ascend", "vllm-project", "vllm-ascend", 86, 142, now),
+      .bind(
+        "vllm-ascend",
+        "vllm-project",
+        "vllm-ascend",
+        seedCount("vllm-ascend", "pr"),
+        seedCount("vllm-ascend", "issue"),
+        now,
+      ),
     db
       .prepare(
         `INSERT INTO repositories
@@ -100,7 +112,14 @@ async function seedDatabase(env: WorkerEnv) {
          VALUES (?, ?, ?, 1, ?, ?, 'idle', ?)
          ON CONFLICT(id) DO UPDATE SET owner = excluded.owner, name = excluded.name`,
       )
-      .bind("vllm", "vllm-project", "vllm", 412, 1300, now),
+      .bind(
+        "vllm",
+        "vllm-project",
+        "vllm",
+        seedCount("vllm", "pr"),
+        seedCount("vllm", "issue"),
+        now,
+      ),
   ];
 
   for (const item of SEED_COMMUNITY_ITEMS) {
@@ -252,7 +271,35 @@ ${architecture.symbols.map((symbol) => `- \`${symbol}\``).join("\n")}`;
   await db.batch(statements);
 }
 
-export function mapCommunityItem(row: Record<string, any>) {
+export function mapCommunityItem(
+  row: Record<string, any>,
+  diffMode: "none" | "stats" | "full" = "none",
+) {
+  const storedDiff =
+    diffMode === "none"
+      ? null
+      : parseJson<Record<string, any> | null>(row.diff_json, null);
+  const diff =
+    storedDiff && diffMode === "stats"
+      ? {
+          ...storedDiff,
+          entries: Array.isArray(storedDiff.entries)
+            ? storedDiff.entries.map((entry: Record<string, any>) => ({
+                path: entry.path,
+                additions: Number(entry.additions ?? 0),
+                deletions: Number(entry.deletions ?? 0),
+              }))
+            : [],
+          raw: undefined,
+          statsOnly: true,
+          complete: false,
+          notice:
+            storedDiff.statsOnly === true
+              ? storedDiff.notice
+              : "当前仅展示文件变更统计；点击“获取代码修改”后统一获取可查看的代码内容。",
+        }
+      : storedDiff;
+
   return {
     id: row.id,
     repo: row.repo_id,
@@ -272,7 +319,7 @@ export function mapCommunityItem(row: Record<string, any>) {
     updatedAt: row.updated_at,
     mergedAt: row.merged_at,
     fetchedAt: row.fetched_at,
-    diff: parseJson(row.diff_json, null),
+    diff,
   };
 }
 

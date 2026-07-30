@@ -23,7 +23,8 @@ import {
 import { createDailyDomainSnapshot, listDomains } from "./domains";
 import {
   diffToText,
-  ensurePullDiff,
+  ensurePullPatches,
+  ensurePullStats,
   syncRepository,
 } from "./github";
 import {
@@ -35,6 +36,7 @@ import {
   readJson,
   requireMethod,
 } from "./http";
+import { handleSettings } from "./settings";
 
 function pathMatch(pathname: string, pattern: RegExp) {
   const match = pathname.match(pattern);
@@ -60,11 +62,15 @@ function isKnownApiPath(path: string) {
   if (exactPaths.has(path)) return true;
   return [
     /^\/api\/repositories\/[^/]+\/sync$/,
-    /^\/api\/community\/[^/]+\/(pr|issue)\/\d+(\/analyze)?$/,
+    /^\/api\/community\/[^/]+\/(pr|issue)\/\d+(\/(analyze|diff-files))?$/,
     /^\/api\/watchlist\/.+$/,
     /^\/api\/analyses\/[^/]+$/,
     /^\/api\/domains\/[^/]+\/snapshot$/,
     /^\/api\/documents\/[^/]+$/,
+    /^\/api\/settings\/(profile|accounts|ai-providers)$/,
+    /^\/api\/settings\/accounts\/[^/]+\/switch$/,
+    /^\/api\/settings\/ai-providers\/[^/]+(\/activate)?$/,
+    /^\/api\/chat\/threads\/[^/]+$/,
     /^\/api\/chat\/threads\/[^/]+\/messages$/,
   ].some((pattern) => pattern.test(path));
 }
@@ -121,7 +127,10 @@ async function listCommunity(request: Request, env: WorkerEnv) {
      LIMIT ?`,
     [...bindings, limit],
   );
-  return json({ items: rows.map(mapCommunityItem), total: rows.length });
+  return json({
+    items: rows.map((row) => mapCommunityItem(row)),
+    total: rows.length,
+  });
 }
 
 async function getCommunityItem(
@@ -133,7 +142,6 @@ async function getCommunityItem(
 ) {
   const number = Number(numberValue);
   if (!Number.isInteger(number)) throw new HttpError(400, "编号不正确");
-  const url = new URL(request.url);
   let item = await first<Record<string, any>>(
     env,
     "SELECT * FROM community_items WHERE repo_id = ? AND kind = ? AND number = ?",
@@ -141,16 +149,8 @@ async function getCommunityItem(
   );
   if (!item) throw new HttpError(404, "社区条目不存在");
 
-  if (
-    kind === "pr" &&
-    (!item.diff_json || url.searchParams.get("refresh_diff") === "1")
-  ) {
-    const refreshed = await ensurePullDiff(
-      env,
-      repo,
-      number,
-      url.searchParams.get("refresh_diff") === "1",
-    );
+  if (kind === "pr") {
+    const refreshed = await ensurePullStats(env, repo, number);
     item = {
       ...item,
       diff_json: JSON.stringify(refreshed.diff),
@@ -166,9 +166,22 @@ async function getCommunityItem(
     [kind, `${repo}:${kind}:${number}`],
   );
   return json({
-    item: mapCommunityItem(item),
+    item: mapCommunityItem(
+      item,
+      kind === "pr" ? "stats" : "none",
+    ),
     analyses: analyses.map(mapAnalysis),
   });
+}
+
+async function getCommunityDiffFiles(
+  env: WorkerEnv,
+  repo: string,
+  numberValue: string,
+) {
+  const number = Number(numberValue);
+  if (!Number.isInteger(number)) throw new HttpError(400, "编号不正确");
+  return json(await ensurePullPatches(env, repo, number));
 }
 
 async function analyzeItem(
@@ -187,11 +200,9 @@ async function analyzeItem(
     [repo, kind, number],
   );
   if (!row) throw new HttpError(404, "社区条目不存在");
-  if (kind === "pr" && !row.diff_json) {
-    const item = await ensurePullDiff(env, repo, number);
-    row = { ...row, diff_json: JSON.stringify(item.diff) };
-  }
-  const diff = parseJson(row.diff_json, null);
+  const diff = parseJson<{
+    entries?: Array<{ path: string; additions: number; deletions: number }>;
+  } | null>(row.diff_json, null);
   const fallback = `# ${row.title} · 深度分析
 
 ## 改动目的
@@ -202,7 +213,7 @@ ${row.ai_summary || "该条目尚未生成 AI 摘要。"}
 
 ${diff?.entries?.length
   ? diff.entries.map((entry: any) => `- \`${entry.path}\`：+${entry.additions} / -${entry.deletions}`).join("\n")
-  : "- 当前没有可用代码 diff。"}
+  : "- 尚未按需获取代码 diff；当前分析仅依据标题与 Markdown 正文。"}
 
 ## 兼容性与风险
 
@@ -211,10 +222,11 @@ ${diff?.entries?.length
 
 ## 建议动作
 
-1. 阅读完整 Markdown 正文与逐文件 diff。
+1. 如需代码级结论，先在详情页点击“获取具体代码修改”。
 2. 核对新增测试是否覆盖多卡和异常路径。
 3. 对仍缺少证据的判断标记为待确认。`;
   const result = await analyzeCommunityItem(env, {
+    userId: user.id,
     title: row.title,
     bodyMd: row.body_md,
     diffText: diffToText(diff),
@@ -250,7 +262,14 @@ ${diff?.entries?.length
     "SELECT * FROM analysis_documents WHERE id = ?",
     [id],
   );
-  return json({ analysis: mapAnalysis(saved!), provider: result.provider }, { status: 201 });
+  return json(
+    {
+      analysis: mapAnalysis(saved!),
+      provider: result.provider,
+      providerName: result.providerName,
+    },
+    { status: 201 },
+  );
 }
 
 async function generateAnalysis(request: Request, env: WorkerEnv) {
@@ -299,6 +318,7 @@ ${rows.slice(0, 8).map((item) => `- **${item.repo_id}#${item.number}**：${item.
 2. 先处理已标记为重点的回归和跨仓库适配关系。
 3. 对结论保持人工确认。`;
   const result = await generateAnalysisDocument(env, {
+    userId: user.id,
     type,
     scope,
     prompt,
@@ -336,7 +356,14 @@ ${rows.slice(0, 8).map((item) => `- **${item.repo_id}#${item.number}**：${item.
     "SELECT * FROM analysis_documents WHERE id = ?",
     [id],
   );
-  return json({ analysis: mapAnalysis(saved!), provider: result.provider }, { status: 201 });
+  return json(
+    {
+      analysis: mapAnalysis(saved!),
+      provider: result.provider,
+      providerName: result.providerName,
+    },
+    { status: 201 },
+  );
 }
 
 async function handleWatchlist(request: Request, env: WorkerEnv, itemId?: string) {
@@ -583,7 +610,57 @@ async function handleChat(request: Request, env: WorkerEnv, path: string) {
         now,
       ],
     );
-    return json({ thread: { id, title: cleanText(body.title, 120) || "新对话" } }, { status: 201 });
+    return json(
+      {
+        thread: {
+          id,
+          title: cleanText(body.title, 120) || "新对话",
+          context: body.context ?? {},
+          createdAt: now,
+          updatedAt: now,
+        },
+      },
+      { status: 201 },
+    );
+  }
+
+  const threadMatch = pathMatch(path, /^\/api\/chat\/threads\/([^/]+)$/);
+  if (threadMatch) {
+    const [threadId] = threadMatch;
+    const thread = await first<Record<string, any>>(
+      env,
+      "SELECT * FROM chat_threads WHERE id = ? AND user_id = ?",
+      [threadId, user.id],
+    );
+    if (!thread) throw new HttpError(404, "对话不存在");
+    if (request.method === "DELETE") {
+      await run(env, "DELETE FROM chat_messages WHERE thread_id = ?", [threadId]);
+      await run(
+        env,
+        "DELETE FROM chat_threads WHERE id = ? AND user_id = ?",
+        [threadId, user.id],
+      );
+      return noContent();
+    }
+    requireMethod(request, ["PUT"]);
+    const body = await readJson<{ title?: string }>(request);
+    const title = cleanText(body.title, 120);
+    if (!title) throw new HttpError(400, "对话标题不能为空");
+    const updatedAt = new Date().toISOString();
+    await run(
+      env,
+      "UPDATE chat_threads SET title = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+      [title, updatedAt, threadId, user.id],
+    );
+    return json({
+      thread: {
+        id: threadId,
+        title,
+        context: parseJson(thread.context_json, {}),
+        createdAt: thread.created_at,
+        updatedAt,
+      },
+    });
   }
 
   const match = pathMatch(path, /^\/api\/chat\/threads\/([^/]+)\/messages$/);
@@ -642,6 +719,7 @@ async function handleChat(request: Request, env: WorkerEnv, path: string) {
     [threadId],
   );
   const result = await answerChat(env, {
+    userId: user.id,
     messages: historyRows.map((row) => ({
       role: row.role,
       content: row.content_md,
@@ -660,7 +738,11 @@ async function handleChat(request: Request, env: WorkerEnv, path: string) {
       assistantId,
       threadId,
       result.content,
-      JSON.stringify({ model: result.model, provider: result.provider }),
+      JSON.stringify({
+        model: result.model,
+        provider: result.provider,
+        providerName: result.providerName,
+      }),
       assistantAt,
     ],
   );
@@ -679,6 +761,7 @@ async function handleChat(request: Request, env: WorkerEnv, path: string) {
         createdAt: assistantAt,
       },
       provider: result.provider,
+      providerName: result.providerName,
     },
     { status: 201 },
   );
@@ -762,6 +845,19 @@ async function handleApi(request: Request, env: WorkerEnv) {
     await requireUser(request, env);
     return listCommunity(request, env);
   }
+  const communityDiffFiles = pathMatch(
+    path,
+    /^\/api\/community\/([^/]+)\/pr\/(\d+)\/diff-files$/,
+  );
+  if (communityDiffFiles) {
+    requireMethod(request, ["GET"]);
+    await requireUser(request, env);
+    return getCommunityDiffFiles(
+      env,
+      communityDiffFiles[0],
+      communityDiffFiles[1],
+    );
+  }
   const communityAnalyze = pathMatch(
     path,
     /^\/api\/community\/([^/]+)\/(pr|issue)\/(\d+)\/analyze$/,
@@ -825,6 +921,9 @@ async function handleApi(request: Request, env: WorkerEnv) {
   const documentDetail = pathMatch(path, /^\/api\/documents\/([^/]+)$/);
   if (documentDetail) return handleDocuments(request, env, documentDetail[0]);
 
+  if (path.startsWith("/api/settings/")) {
+    return handleSettings(request, env, path);
+  }
   if (path.startsWith("/api/chat/")) return handleChat(request, env, path);
 
   throw new HttpError(404, "API 接口不存在");

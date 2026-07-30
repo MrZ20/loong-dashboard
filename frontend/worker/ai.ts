@@ -1,4 +1,5 @@
-import type { WorkerEnv } from "./db";
+import { decryptCredential } from "./credentials";
+import { first, type WorkerEnv } from "./db";
 import { HttpError } from "./http";
 
 interface AIMessage {
@@ -10,10 +11,54 @@ export interface AIResult {
   content: string;
   model: string;
   provider: "api" | "fallback";
+  providerName: string;
 }
 
 function normalizeBaseUrl(value: string | undefined) {
   return (value || "https://api.openai.com/v1").replace(/\/+$/, "");
+}
+
+async function resolveAIProvider(env: WorkerEnv, userId: string) {
+  const selected = await first<Record<string, any>>(
+    env,
+    `SELECT user_profiles.active_ai_provider_id, ai_providers.*
+     FROM user_profiles
+     LEFT JOIN ai_providers
+       ON ai_providers.id = user_profiles.active_ai_provider_id
+       AND ai_providers.user_id = user_profiles.user_id
+     WHERE user_profiles.user_id = ?`,
+    [userId],
+  );
+  if (
+    selected?.active_ai_provider_id &&
+    selected.active_ai_provider_id !== "environment" &&
+    selected.id
+  ) {
+    return {
+      name: selected.name as string,
+      model: selected.model as string,
+      mode:
+        selected.api_mode === "responses"
+          ? ("responses" as const)
+          : ("chat_completions" as const),
+      baseUrl: normalizeBaseUrl(selected.base_url),
+      token: await decryptCredential(env, selected.encrypted_token),
+      configured: true,
+      source: "stored" as const,
+    };
+  }
+  return {
+    name: "环境变量 OpenAI-compatible",
+    model: env.AI_MODEL || "gpt-5-mini",
+    mode:
+      env.AI_API_MODE === "responses"
+        ? ("responses" as const)
+        : ("chat_completions" as const),
+    baseUrl: normalizeBaseUrl(env.AI_API_BASE_URL),
+    token: env.AI_API_KEY || "",
+    configured: Boolean(env.AI_API_KEY),
+    source: "environment" as const,
+  };
 }
 
 function extractResponsesText(payload: any) {
@@ -29,16 +74,21 @@ function extractResponsesText(payload: any) {
 
 export async function callAI(
   env: WorkerEnv,
+  userId: string,
   messages: AIMessage[],
   fallback: string,
 ): Promise<AIResult> {
-  const model = env.AI_MODEL || "gpt-5-mini";
-  if (!env.AI_API_KEY) {
-    return { content: fallback, model: "fallback", provider: "fallback" };
+  const selected = await resolveAIProvider(env, userId);
+  if (!selected.configured) {
+    return {
+      content: fallback,
+      model: "fallback",
+      provider: "fallback",
+      providerName: selected.name,
+    };
   }
 
-  const mode = env.AI_API_MODE === "responses" ? "responses" : "chat_completions";
-  const baseUrl = normalizeBaseUrl(env.AI_API_BASE_URL);
+  const { model, mode, baseUrl } = selected;
   const endpoint =
     mode === "responses" ? `${baseUrl}/responses` : `${baseUrl}/chat/completions`;
   const body =
@@ -56,12 +106,13 @@ export async function callAI(
           temperature: 0.2,
         };
 
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+  };
+  if (selected.token) headers.authorization = `Bearer ${selected.token}`;
   const response = await fetch(endpoint, {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${env.AI_API_KEY}`,
-      "content-type": "application/json",
-    },
+    headers,
     body: JSON.stringify(body),
   });
 
@@ -70,7 +121,7 @@ export async function callAI(
     throw new HttpError(502, `AI API 调用失败（${response.status}）`, detail);
   }
 
-  const payload = await response.json<any>();
+  const payload = (await response.json()) as any;
   const content =
     mode === "responses"
       ? extractResponsesText(payload)
@@ -79,12 +130,18 @@ export async function callAI(
     throw new HttpError(502, "AI API 未返回可用内容");
   }
 
-  return { content: content.trim(), model, provider: "api" };
+  return {
+    content: content.trim(),
+    model,
+    provider: "api",
+    providerName: selected.name,
+  };
 }
 
 export async function generateAnalysisDocument(
   env: WorkerEnv,
   input: {
+    userId: string;
     type: string;
     scope: string;
     prompt: string;
@@ -107,6 +164,7 @@ ${input.prompt}
 ${input.evidence.slice(0, 80_000)}`;
   return callAI(
     env,
+    input.userId,
     [
       { role: "system", content: system },
       { role: "user", content: user },
@@ -118,6 +176,7 @@ ${input.evidence.slice(0, 80_000)}`;
 export async function analyzeCommunityItem(
   env: WorkerEnv,
   input: {
+    userId: string;
     title: string;
     bodyMd: string;
     diffText: string;
@@ -130,6 +189,7 @@ export async function analyzeCommunityItem(
 如果证据不足，明确写“待确认”，不要编造未出现的文件或行为。`;
   return callAI(
     env,
+    input.userId,
     [
       { role: "system", content: system },
       {
@@ -153,6 +213,7 @@ ${input.diffText.slice(0, 120_000)}`,
 export async function answerChat(
   env: WorkerEnv,
   input: {
+    userId: string;
     messages: AIMessage[];
     pageContext: string;
     selection: string;
@@ -166,11 +227,12 @@ ${input.pageContext.slice(0, 12_000) || "未提供"}
 
 用户选中的文本：
 ${input.selection.slice(0, 8_000) || "未选择"}`;
-  const fallback = `我已经收到问题，但当前环境尚未配置 AI API。
+  const fallback = `我已经收到问题，但当前账户尚未配置可用的 AI。
 
-你可以在部署环境中设置 \`AI_API_KEY\`、\`AI_API_BASE_URL\` 和 \`AI_MODEL\`。选中的页面内容已经随请求传给服务端，配置完成后即可基于这段上下文回答。`;
+你可以在“设置 → AI 模型”中新增并切换 API 配置，或继续使用环境变量 OpenAI-compatible 调试方式。选中的页面内容已经随请求传给服务端，配置完成后即可基于这段上下文回答。`;
   return callAI(
     env,
+    input.userId,
     [
       { role: "system", content: system },
       { role: "system", content: context },
