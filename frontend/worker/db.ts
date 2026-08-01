@@ -1,10 +1,28 @@
-import { indexStatements, schemaStatements } from "../db/schema";
 import {
   DOMAIN_ARCHITECTURES,
   SEED_ANALYSES,
   SEED_COMMUNITY_ITEMS,
   SEED_TECHNICAL_DOCUMENTS,
 } from "./seed";
+
+const databaseInitializations = new WeakMap<object, Promise<void>>();
+const REQUIRED_TABLES = [
+  "app_meta",
+  "users",
+  "user_profiles",
+  "ai_providers",
+  "repositories",
+  "community_items",
+  "community_events",
+  "cross_repo_impacts",
+  "watchlist",
+  "analysis_documents",
+  "domain_snapshots",
+  "technical_documents",
+  "chat_threads",
+  "chat_messages",
+  "sync_runs",
+] as const;
 
 export interface WorkerEnv {
   ASSETS: { fetch(request: Request): Promise<Response> };
@@ -69,9 +87,23 @@ export function parseJson<T>(value: unknown, fallback: T): T {
 
 export async function initializeDatabase(env: WorkerEnv) {
   const db = requireDb(env);
-  await db.batch(schemaStatements.map((statement) => db.prepare(statement)));
-  await ensureRuntimeColumns(env);
-  await db.batch(indexStatements.map((statement) => db.prepare(statement)));
+  if (typeof db !== "object" || db === null) {
+    await prepareDatabase(env);
+    return;
+  }
+  let pending = databaseInitializations.get(db);
+  if (!pending) {
+    pending = prepareDatabase(env).catch((error) => {
+      databaseInitializations.delete(db);
+      throw error;
+    });
+    databaseInitializations.set(db, pending);
+  }
+  await pending;
+}
+
+async function prepareDatabase(env: WorkerEnv) {
+  await verifyDatabaseSchema(env);
   await ensureCoreRepositories(env);
 
   const seedVersion = await first<{ value: string }>(
@@ -93,38 +125,17 @@ export async function initializeDatabase(env: WorkerEnv) {
   }
 }
 
-async function ensureRuntimeColumns(env: WorkerEnv) {
-  const columns = await query<{ name: string }>(
+async function verifyDatabaseSchema(env: WorkerEnv) {
+  const tables = await query<{ name: string }>(
     env,
-    "PRAGMA table_info(community_items)",
+    "SELECT name FROM sqlite_master WHERE type = 'table'",
   );
-  const existing = new Set(columns.map((column) => column.name));
-  const additions = [
-    ["created_at", "ALTER TABLE community_items ADD COLUMN created_at TEXT"],
-    ["closed_at", "ALTER TABLE community_items ADD COLUMN closed_at TEXT"],
-    [
-      "is_draft",
-      "ALTER TABLE community_items ADD COLUMN is_draft INTEGER NOT NULL DEFAULT 0",
-    ],
-    [
-      "content_hash",
-      "ALTER TABLE community_items ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
-    ],
-    [
-      "summary_input_hash",
-      "ALTER TABLE community_items ADD COLUMN summary_input_hash TEXT NOT NULL DEFAULT ''",
-    ],
-    [
-      "summary_source",
-      "ALTER TABLE community_items ADD COLUMN summary_source TEXT NOT NULL DEFAULT 'excerpt'",
-    ],
-    [
-      "summary_updated_at",
-      "ALTER TABLE community_items ADD COLUMN summary_updated_at TEXT",
-    ],
-  ] as const;
-  for (const [name, sql] of additions) {
-    if (!existing.has(name)) await run(env, sql);
+  const existing = new Set(tables.map((table) => table.name));
+  const missing = REQUIRED_TABLES.filter((table) => !existing.has(table));
+  if (missing.length) {
+    throw new Error(
+      `D1 数据库尚未迁移，缺少表：${missing.join(", ")}。请先执行 npm run db:migrate:local，部署环境则应用 drizzle migrations。`,
+    );
   }
 }
 

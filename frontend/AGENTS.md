@@ -34,3 +34,21 @@ Before making substantial visual changes, use the Product Design plugin's `get-c
 When implementing from a selected generated mock, treat that image as the source of truth for layout, component anatomy, density, spacing, color, typography, visible content, and hierarchy.
 
 Build app UI in `src/` and service code in `worker/`. Keep `.openai/hosting.json`, `scripts/prepare-sites-build.mjs`, migrations, and `tests/sites-worker.test.mjs` aligned so the same source can be handed to Sites. Before a Sites handoff, run `npm run typecheck`, `npm run build`, and `npm run test:sites`; the build must leave `dist/client/index.html`, `dist/server/index.js`, `dist/.openai/hosting.json`, and the D1 migrations.
+
+## Architecture boundaries
+
+- Keep `worker/index.ts` as a thin same-origin shell and route manifest. HTTP
+  parsing and response shaping belong in `worker/routes/`.
+- Route modules must not embed SQL. Put feature data access in
+  `worker/repositories/`, orchestration in `worker/services/`, external API
+  clients in `worker/integrations/`, and HTTP-independent rules in
+  `worker/domain/`.
+- D1 migrations in `drizzle/` are the only schema source. Runtime initialization
+  may verify migrated tables and seed required records, but must never create or
+  alter schema.
+- Keep `src/App.vue` focused on shell composition. Shared state and workflows
+  belong in feature composables, API calls in feature modules under `src/api/`,
+  and global CSS in ordered feature files imported by `src/styles.css`.
+- Preserve the compatibility facades at `worker/github.ts` and
+  `src/api/client.ts` while existing callers depend on them; add new behavior to
+  the layered modules behind those facades.

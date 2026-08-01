@@ -36,11 +36,22 @@ technical architecture maps, a Markdown knowledge base, and contextual chat.
 
 The application lives in `frontend/`:
 
-- `src/`: Vue 3 application.
-- `worker/`: same-origin API Worker.
-- `drizzle/`: D1 migration SQL.
+- `src/`: Vue 3 application shell composed from feature composables, API
+  modules, components, and ordered style modules.
+- `worker/routes/`: HTTP parsing, authentication gates, and response shaping.
+- `worker/services/`: GitHub synchronization and pull-detail orchestration.
+- `worker/repositories/`: D1 reads and writes for each feature.
+- `worker/integrations/`: external GitHub and AI provider clients.
+- `worker/domain/`: pure community classification, review-signal, and diff
+  logic.
+- `drizzle/`: the single authoritative source for the D1 schema.
 - `dist/client/`: generated static assets.
 - `dist/server/index.js`: generated Worker bundle.
+
+`worker/index.ts` is intentionally a thin same-origin shell. Route handlers do
+not embed SQL, domain modules do not depend on HTTP, and the small compatibility
+facades preserve existing imports while callers migrate toward the layered
+modules.
 
 Production identity is provided by the hosting platform through authenticated
 user headers. The application never stores GitHub or AI credentials in the
@@ -53,13 +64,21 @@ when `ALLOW_DEV_AUTH=true`.
 ```bash
 cd frontend
 npm install
+```
+
+Initialize the local D1 database once, then start the service:
+
+```bash
+npm run db:migrate:local
 npm run dev:service
 ```
 
-The full service listens on `http://127.0.0.1:4174`. On first request it creates
-the local D1 schema and the two configured repository records. Production-like
-development starts empty; use the repository sync action to collect real GitHub
-data. Sample records are inserted only when `SEED_DEMO_DATA=true`.
+The full service listens on `http://127.0.0.1:4174`. At runtime the Worker
+verifies that migrations have been applied and ensures the two configured
+repository records exist; it never creates or mutates schema from request
+code. Production-like development starts empty, so use the repository sync
+action to collect real GitHub data. Sample records are inserted only when
+`SEED_DEMO_DATA=true`.
 
 For frontend-only visual work, `npm run dev` is still available, but API-backed
 features require `npm run dev:service`.

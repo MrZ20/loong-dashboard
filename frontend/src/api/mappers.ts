@@ -1,0 +1,54 @@
+import type { CommunityItem } from "../types";
+
+function relativeTime(value: string) {
+  const timestamp = new Date(value).valueOf();
+  if (!Number.isFinite(timestamp)) return value;
+  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1_000));
+  if (seconds < 60) return "刚刚";
+  if (seconds < 3_600) return `${Math.round(seconds / 60)} 分钟前`;
+  if (seconds < 86_400) return `${Math.round(seconds / 3_600)} 小时前`;
+  return `${Math.round(seconds / 86_400)} 天前`;
+}
+
+export function mapCommunityItem(item: any): CommunityItem {
+  return {
+    id: Number(item.number),
+    repo: item.repo,
+    kind: item.kind,
+    state: item.state,
+    title: item.title,
+    author: item.author,
+    time: relativeTime(item.updatedAt),
+    updatedAt: item.updatedAt,
+    statusText: item.statusText,
+    domain: item.domain,
+    summary: item.aiSummary,
+    summarySource: item.summarySource === "ai" ? "ai" : "excerpt",
+    summaryUpdatedAt: item.summaryUpdatedAt ?? null,
+    body: item.bodyMd,
+    bodyMd: item.bodyMd,
+    htmlUrl: item.htmlUrl,
+    comments: Number(item.comments ?? 0),
+    important: Boolean(item.important),
+    lastEventType: item.lastEventType ?? null,
+    lastEventAt: item.lastEventAt ?? null,
+    domainAssessment: item.domainAssessment ?? {
+      domain: item.domain,
+      source: "text",
+      confidence: 0,
+      confidenceLabel: "low",
+      matchedPaths: [],
+      matchedTerms: [],
+      scores: [],
+    },
+    reviewSignal: item.reviewSignal ?? null,
+    reviewSignalUpdatedAt: item.reviewSignalUpdatedAt ?? null,
+    diff: item.diff ?? undefined,
+    deepAnalysis: {
+      overview: "",
+      impact: "",
+      risks: [],
+      suggestions: [],
+    },
+  };
+}

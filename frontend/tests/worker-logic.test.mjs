@@ -16,8 +16,10 @@ async function importWorkerModule(entryPoint) {
 }
 
 const timeModule = await importWorkerModule("worker/time.ts");
+const dbModule = await importWorkerModule("worker/db.ts");
 const githubModule = await importWorkerModule("worker/github.ts");
 const intelligenceModule = await importWorkerModule("worker/intelligence.ts");
+const routeManifestModule = await importWorkerModule("worker/routes/manifest.ts");
 
 test("uses Beijing natural-day boundaries independent of server timezone", () => {
   assert.equal(
@@ -34,6 +36,59 @@ test("uses Beijing natural-day boundaries independent of server timezone", () =>
     end: "2026-07-30T16:00:00.000Z",
     timezone: "Asia/Shanghai",
   });
+});
+
+test("initializes a migrated D1 binding only once per worker isolate", async () => {
+  let schemaChecks = 0;
+  let writes = 0;
+  const requiredTables = [
+    "app_meta",
+    "users",
+    "user_profiles",
+    "ai_providers",
+    "repositories",
+    "community_items",
+    "community_events",
+    "cross_repo_impacts",
+    "watchlist",
+    "analysis_documents",
+    "domain_snapshots",
+    "technical_documents",
+    "chat_threads",
+    "chat_messages",
+    "sync_runs",
+  ];
+  const db = {
+    prepare(sql) {
+      const statement = {
+        bind() {
+          return statement;
+        },
+        async all() {
+          if (sql.includes("sqlite_master")) {
+            schemaChecks += 1;
+            return { results: requiredTables.map((name) => ({ name })) };
+          }
+          if (sql.includes("SELECT value FROM app_meta")) {
+            return { results: [{ value: "3" }] };
+          }
+          return { results: [] };
+        },
+        async run() {
+          writes += 1;
+          return { success: true };
+        },
+      };
+      return statement;
+    },
+  };
+  const env = { DB: db };
+
+  await dbModule.initializeDatabase(env);
+  await dbModule.initializeDatabase(env);
+
+  assert.equal(schemaChecks, 1);
+  assert.equal(writes, 2);
 });
 
 test("does not classify an arbitrary word containing ci as CI infrastructure", () => {
@@ -122,6 +177,24 @@ test("turns verifiable GitHub facts into a review action", () => {
   });
   assert.equal(conflict.action, "blocked");
   assert.equal(conflict.label, "先解决冲突");
+
+  const draft = githubModule.buildReviewSignal({
+    state: "open",
+    draft: true,
+    mergeability: "mergeable",
+    checks: [{ name: "unit-test", status: "success" }],
+    source: "github-rest",
+  });
+  assert.equal(draft.action, "waiting");
+  assert.equal(draft.label, "Draft，暂缓");
+
+  const merged = githubModule.buildReviewSignal({
+    state: "merged",
+    draft: false,
+    source: "metadata",
+  });
+  assert.equal(merged.action, "complete");
+  assert.equal(merged.score, 0);
 });
 
 test("removes common pull request template headings from excerpt summaries", () => {
@@ -202,4 +275,30 @@ test("deduplicates near-identical GitHub and sync transition observations", () =
     result.map((event) => event.event_id),
     ["github-close", "later-close"],
   );
+});
+
+test("recognizes the public API surface without accepting lookalike paths", () => {
+  const accepted = [
+    "/api/health",
+    "/api/community",
+    "/api/community/vllm/pr/42",
+    "/api/community/vllm-ascend/pr/42/diff-files",
+    "/api/community/vllm/issue/7/analyze",
+    "/api/settings/ai-providers/provider-1/activate",
+    "/api/chat/threads/thread-1/messages",
+  ];
+  for (const path of accepted) {
+    assert.equal(routeManifestModule.isKnownApiPath(path), true, path);
+  }
+
+  const rejected = [
+    "/api/community/vllm/pr/not-a-number",
+    "/api/community/vllm/pr/42/files",
+    "/api/settings/secrets",
+    "/api/chat/threads/thread-1/messages/extra",
+    "/api/health/extra",
+  ];
+  for (const path of rejected) {
+    assert.equal(routeManifestModule.isKnownApiPath(path), false, path);
+  }
 });
