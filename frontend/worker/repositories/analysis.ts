@@ -89,6 +89,9 @@ export async function createGeneratedAnalysisRow(
     summaryMd: string;
     contentMd: string;
     prompt: string;
+    promptTemplateId: string;
+    promptTemplateName: string;
+    promptRevision: number;
     model: string;
     userId: string;
     sourceRefs: string[];
@@ -98,9 +101,10 @@ export async function createGeneratedAnalysisRow(
   await run(
     env,
     `INSERT INTO analysis_documents (
-      id, type, scope, title, summary_md, content_md, prompt, model, status,
+      id, type, scope, title, summary_md, content_md, prompt,
+      prompt_template_id, prompt_template_name, prompt_revision, model, status,
       created_by, source_refs_json, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?)`,
     [
       input.id,
       input.type,
@@ -109,6 +113,9 @@ export async function createGeneratedAnalysisRow(
       input.summaryMd,
       input.contentMd,
       input.prompt,
+      input.promptTemplateId,
+      input.promptTemplateName,
+      input.promptRevision,
       input.model,
       input.userId,
       JSON.stringify(input.sourceRefs),

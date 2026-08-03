@@ -7,9 +7,14 @@ technical architecture maps, a Markdown knowledge base, and contextual chat.
 
 ## What is included
 
-- GitHub synchronization for both repositories, with a cached D1 data model.
-  Sidebar counts describe the bounded recent snapshot stored by LoongBoard,
-  rather than GitHub's repository-wide open backlog.
+- Four independently configured refresh tasks for both repositories: GitHub
+  facts (hourly by default), AI summaries (every six hours), classification
+  labels (first acquisition by default), and manual-only deep analysis. D1
+  stores each task's schedule, last attempt, last success, successful inclusive
+  `updated_at` watermark, next run, status, pending count, and recent error.
+- Community facts use idempotent `(repository, kind, number)` upserts and an
+  inclusive successful watermark. Failed runs never advance that watermark.
+  Opening lists or details is database-only and never calls GitHub or AI.
 - PR and Issue lists with status, AI technical-domain classification, and
   concise summaries.
 - Rendered Markdown bodies plus on-demand `diff --stat` and expandable
@@ -29,6 +34,11 @@ technical architecture maps, a Markdown knowledge base, and contextual chat.
 - Multiple encrypted OpenAI-compatible API configurations per account, with an
   explicit active-provider switch and the environment-variable provider kept as
   a built-in debugging option.
+- A per-account prompt center with multiple templates for PR/Issue triage, deep
+  analysis, daily reports, cross-repository insights, and chat. Each function
+  has one active template, while locked output contracts keep generated JSON and
+  Markdown reliable. Generated analyses retain the template name, revision, and
+  prompt snapshot used at creation time.
 - A desktop sidebar that can collapse to an icon-only rail.
 - Light and dark themes.
 
@@ -39,7 +49,8 @@ The application lives in `frontend/`:
 - `src/`: Vue 3 application shell composed from feature composables, API
   modules, components, and ordered style modules.
 - `worker/routes/`: HTTP parsing, authentication gates, and response shaping.
-- `worker/services/`: GitHub synchronization and pull-detail orchestration.
+- `worker/services/`: independent facts, summary, classification, deep-analysis,
+  prompt, and refresh-task orchestration.
 - `worker/repositories/`: D1 reads and writes for each feature.
 - `worker/integrations/`: external GitHub and AI provider clients.
 - `worker/domain/`: pure community classification, review-signal, and diff
@@ -95,7 +106,7 @@ variables in the deployment environment:
 | `AI_API_MODE` | No | `responses` or `chat_completions` |
 | `AI_MODEL` | No | Provider model name |
 | `CREDENTIALS_ENCRYPTION_KEY` | For saved AI providers | Encrypts per-account AI tokens stored in D1 |
-| `GITHUB_TOKEN` | Recommended | Higher rate limits and private-repository access |
+| `GITHUB_TOKEN` | Recommended fallback | Service-level GitHub credential used when the current account has no saved Token |
 | `ALLOW_DEV_AUTH` | Local only | Enables the signed local development session |
 | `LOCAL_ADMIN_PASSWORD` | Local/LAN only | Required password for the local administrator login |
 | `SESSION_SECRET` | Local only | Signs the development session cookie |
@@ -106,6 +117,11 @@ built-in provider in Settings. Users can also save several per-account
 OpenAI-compatible providers and choose one as active. If the selected provider
 has no usable credential, AI endpoints return an explicit, deterministic
 fallback document instead of pretending that a model was called.
+
+Each account can save a GitHub Personal Access Token in Settings → Community
+Data Refresh. It is encrypted at rest with the same server-side credential key,
+never returned in plaintext, and takes precedence over `GITHUB_TOKEN` for fact
+refreshes, summary patch collection, and explicit diff retrieval.
 
 The checked-in `wrangler.toml` password is only for the loopback development
 server. Before listening on a LAN address, replace `LOCAL_ADMIN_PASSWORD`,
@@ -129,8 +145,7 @@ marks any binary or provider-truncated patch explicitly.
 
 ## Legacy root prototype
 
-The repository root also contains the earlier Python-backed prototype. Its
-feature backlog remains in [docs/FEATURES.md](docs/FEATURES.md), and it can be
-started with the root-level `npm run dev` after installing
-`requirements.txt` in `.venv`. The maintained deployable application described
-above lives in `frontend/`.
+The repository root still contains the earlier Python-backed prototype, but it
+is not part of the maintained service or its validation path. The current
+feature status is tracked in [docs/FEATURES.md](docs/FEATURES.md); the deployable
+application described above lives in `frontend/`.

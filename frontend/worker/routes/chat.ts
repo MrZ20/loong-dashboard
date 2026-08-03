@@ -23,6 +23,9 @@ import {
   renameThreadRow,
   touchThreadRow,
 } from "../repositories/chat";
+import { updateThreadLocalAnalysisState } from "../repositories/local-runner";
+import { enqueueRepositoryChat } from "../services/local-analysis";
+import { resolveAITask } from "../services/ai-task-settings";
 
 function pathMatch(pathname: string, pattern: RegExp) {
   const match = pathname.match(pattern);
@@ -39,6 +42,15 @@ export async function handleChat(request: Request, env: WorkerEnv, path: string)
           id: row.id,
           title: row.title,
           context: parseJson(row.context_json, {}),
+          mode: row.mode || "normal",
+          repoScope: row.repo_scope || "",
+          targetRef: row.target_ref || "",
+          providerId: row.provider_id || "",
+          modelId: row.model_id || "",
+          opencodeSessionId: row.opencode_session_id ?? null,
+          opencodeCommitSha: row.opencode_commit_sha || "",
+          runnerJobId: row.runner_job_id ?? null,
+          localEvidence: Boolean(row.local_evidence),
           createdAt: row.created_at,
           updatedAt: row.updated_at,
         })),
@@ -119,6 +131,11 @@ export async function handleChat(request: Request, env: WorkerEnv, path: string)
     content?: string;
     pageContext?: string;
     selection?: string;
+    mode?: string;
+    repoScope?: string;
+    targetRef?: string;
+    providerId?: string;
+    modelId?: string;
   }>(request);
   const content = cleanText(body.content, 20_000);
   if (!content) throw new HttpError(400, "问题不能为空");
@@ -128,6 +145,95 @@ export async function handleChat(request: Request, env: WorkerEnv, path: string)
     pageContext: cleanText(body.pageContext, 20_000),
     selection: cleanText(body.selection, 8_000),
   };
+  if (body.mode === "repository") {
+    const repoScope = cleanText(body.repoScope, 40);
+    if (!["vllm", "vllm-ascend", "both", "current"].includes(repoScope)) {
+      throw new HttpError(400, "仓库分析模式需要选择代码范围");
+    }
+    const repositoryTask = await resolveAITask(env, user.id, "repository_code_chat");
+    if (repositoryTask.executionMode === "opencode") {
+      const result = await enqueueRepositoryChat(env, {
+        userId: user.id,
+        threadId,
+        content,
+        repoScope,
+        targetRef: cleanText(body.targetRef, 200) || "HEAD",
+        providerId: "",
+        modelId: "",
+        pageContext: context.pageContext,
+        selection: context.selection,
+      });
+      return json(result, { status: 202 });
+    }
+    await createMessageRow(env, {
+      id: userMessageId,
+      threadId,
+      role: "user",
+      contentMd: content,
+      context: { ...context, mode: "repository", repoScope, localEvidence: false },
+      createdAt: now,
+    });
+    const historyRows = await listConversationRows(env, threadId);
+    const result = await answerChat(env, {
+      userId: user.id,
+      messages: historyRows.map((row) => ({ role: row.role, content: row.content_md })),
+      pageContext: `${context.pageContext}\n\n仓库范围：${repoScope}\n目标版本：${cleanText(body.targetRef, 200) || "HEAD"}\n注意：当前任务使用直连 API，没有读取本地源码，不得声称已完成代码检索。`,
+      selection: context.selection,
+      taskKey: "repository_code_chat",
+    });
+    const assistantId = crypto.randomUUID();
+    const assistantAt = new Date().toISOString();
+    await createMessageRow(env, {
+      id: assistantId,
+      threadId,
+      role: "assistant",
+      contentMd: result.content,
+      context: {
+        mode: "repository",
+        localEvidence: false,
+        model: result.model,
+        provider: result.providerName,
+        promptTemplateId: result.prompt.templateId,
+      },
+      createdAt: assistantAt,
+    });
+    await touchThreadRow(env, threadId, content.slice(0, 50), assistantAt);
+    await updateThreadLocalAnalysisState(env, {
+      threadId,
+      mode: "repository",
+      repoScope,
+      targetRef: cleanText(body.targetRef, 200) || "HEAD",
+      providerId: result.providerName,
+      modelId: result.model,
+      runnerJobId: null,
+      localEvidence: false,
+    });
+    return json({
+      userMessage: { id: userMessageId, role: "user", contentMd: content, createdAt: now },
+      assistantMessage: { id: assistantId, role: "assistant", contentMd: result.content, createdAt: assistantAt },
+      provider: result.provider,
+      providerName: result.providerName,
+    }, { status: 201 });
+  }
+  const normalTask = await resolveAITask(env, user.id, "chat_assistant");
+  if (normalTask.executionMode === "opencode") {
+    const repoScope = ["vllm", "vllm-ascend", "both", "current"].includes(body.repoScope || "")
+      ? String(body.repoScope)
+      : "both";
+    const result = await enqueueRepositoryChat(env, {
+      userId: user.id,
+      threadId,
+      content,
+      repoScope,
+      targetRef: cleanText(body.targetRef, 200) || "HEAD",
+      providerId: "",
+      modelId: "",
+      pageContext: context.pageContext,
+      selection: context.selection,
+      taskKey: "chat_assistant",
+    });
+    return json({ ...result, effectiveMode: "repository" }, { status: 202 });
+  }
   await createMessageRow(env, {
     id: userMessageId,
     threadId,
@@ -157,6 +263,9 @@ export async function handleChat(request: Request, env: WorkerEnv, path: string)
       model: result.model,
       provider: result.provider,
       providerName: result.providerName,
+      promptTemplateId: result.prompt.templateId,
+      promptTemplateName: result.prompt.name,
+      promptRevision: result.prompt.revision,
     },
     createdAt: assistantAt,
   });
@@ -176,4 +285,3 @@ export async function handleChat(request: Request, env: WorkerEnv, path: string)
     { status: 201 },
   );
 }
-

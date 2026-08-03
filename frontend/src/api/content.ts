@@ -1,6 +1,7 @@
 import type {
   AnalysisDocument,
   DomainMapApi,
+  LocalAnalysisJob,
   TechnicalDocument,
 } from "../types";
 import { apiFetch } from "./core";
@@ -27,11 +28,14 @@ export const contentApi = {
     input: {
       type: string;
       scope: string;
-      prompt: string;
       title?: string;
+      useLocalCode?: boolean;
+      targets?: unknown[];
+      providerId?: string;
+      modelId?: string;
     },
   ) =>
-    apiFetch<{ analysis: AnalysisDocument; provider: string }>(
+    apiFetch<{ analysis?: AnalysisDocument; provider?: string; job?: LocalAnalysisJob }>(
       "/api/analyses/generate",
       { method: "POST", body: JSON.stringify(input) },
     ),
@@ -42,7 +46,7 @@ export const contentApi = {
   },
 
   createDomainSnapshot: (domain: string) =>
-    apiFetch<{ snapshot: unknown }>(
+    apiFetch<{ snapshot: unknown | null; job?: LocalAnalysisJob | null }>(
       `/api/domains/${encodeURIComponent(domain)}/snapshot`,
       { method: "POST" },
     ),
@@ -56,6 +60,23 @@ export const contentApi = {
     );
     return result.documents;
   },
+
+  generateDocumentDraft: (input: {
+    title: string;
+    category: string;
+    summary: string;
+    contentMd: string;
+    tags: string[];
+    sourceRefs: string[];
+  }) =>
+    apiFetch<{
+      draft?: { contentMd: string; summary: string };
+      provider?: string;
+      job?: LocalAnalysisJob;
+    }>("/api/documents/generate", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
 
   saveDocument: (
     input: Partial<TechnicalDocument> &
@@ -73,4 +94,3 @@ export const contentApi = {
     ),
 
 };
-

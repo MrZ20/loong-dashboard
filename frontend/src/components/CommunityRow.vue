@@ -26,7 +26,15 @@ const iconName = computed(() => {
 
 const stateClass = computed(() => `community-row__state--${props.item.state}`);
 const summaryLabel = computed(() =>
-  props.item.summarySource === "ai" ? "AI 摘要" : "正文摘录",
+  props.item.summarySource === "ai"
+    ? `AI 摘要 · ${
+        props.item.summaryVersion?.evidenceCompleteness === "complete"
+          ? "证据完整"
+          : props.item.summaryVersion?.evidenceCompleteness === "partial"
+            ? "证据部分完整"
+            : "证据不足"
+      }`
+    : "正文摘录",
 );
 const effectiveStatus = computed(() => {
   if (props.item.lastEventType === "reopened") return "Reopened";

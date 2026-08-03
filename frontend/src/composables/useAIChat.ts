@@ -1,6 +1,12 @@
 import { computed, reactive } from "vue";
 import { api, ApiError } from "../api/client";
-import type { ChatMessage, ChatThread } from "../types";
+import type {
+  ChatMessage,
+  ChatThread,
+  LocalAnalysisEvent,
+  LocalAnalysisJob,
+  LocalRunnerSettingsState,
+} from "../types";
 
 const state = reactive({
   open: false,
@@ -14,9 +20,66 @@ const state = reactive({
   selection: "",
   pageContext: "",
   draft: "",
+  mode: "normal" as "normal" | "repository",
+  repoScope: "vllm-ascend",
+  targetRef: "HEAD",
+  providerId: "",
+  modelId: "",
+  localJob: null as LocalAnalysisJob | null,
+  localEvents: [] as LocalAnalysisEvent[],
+  localSettings: null as LocalRunnerSettingsState | null,
 });
 
 let initializingPromise: Promise<void> | null = null;
+let localJobTimer: number | null = null;
+
+function stopLocalJobPolling() {
+  if (localJobTimer !== null) window.clearTimeout(localJobTimer);
+  localJobTimer = null;
+}
+
+function applyThreadMode(thread?: ChatThread) {
+  state.mode = thread?.mode || "normal";
+  state.repoScope = thread?.repoScope || "vllm-ascend";
+  state.targetRef = thread?.targetRef || "HEAD";
+  state.providerId = thread?.providerId || state.localSettings?.settings.defaultProvider || "";
+  state.modelId = thread?.modelId || state.localSettings?.settings.defaultModel || "";
+}
+
+async function pollRepositoryJob(jobId: string, threadId: string) {
+  stopLocalJobPolling();
+  try {
+    const after = state.localEvents.at(-1)?.sequence ?? 0;
+    const result = await api.localAnalysisJob(jobId, after);
+    if (state.threadId !== threadId) return;
+    state.localJob = result.job;
+    state.localEvents.push(...result.events);
+    if (!["completed", "failed", "cancelled"].includes(result.job.status)) {
+      state.sending = true;
+      localJobTimer = window.setTimeout(() => pollRepositoryJob(jobId, threadId), 1_000);
+      return;
+    }
+    state.sending = false;
+    state.messages = (await api.messages(threadId)).messages;
+    const { threads } = await api.threads();
+    state.threads = threads;
+    sortThreads();
+    if (result.job.status === "failed") state.error = result.job.error || "仓库分析失败";
+    if (result.job.status === "cancelled") state.error = "仓库分析已取消";
+  } catch (cause) {
+    state.sending = false;
+    state.error = cause instanceof ApiError ? cause.message : "仓库分析状态读取失败";
+  }
+}
+
+async function resumeThreadJob(thread?: ChatThread) {
+  stopLocalJobPolling();
+  state.localEvents = [];
+  state.localJob = null;
+  if (!thread?.runnerJobId) return;
+  state.sending = true;
+  await pollRepositoryJob(thread.runnerJobId, thread.id);
+}
 
 function sortThreads() {
   state.threads.sort(
@@ -31,16 +94,23 @@ async function initialize() {
   initializingPromise = (async () => {
     state.error = "";
     try {
-      const { threads } = await api.threads();
+      const [{ threads }, localSettings] = await Promise.all([
+        api.threads(),
+        api.localAnalysisSettings().catch(() => null),
+      ]);
+      state.localSettings = localSettings;
       state.threads = threads;
       if (threads[0]) {
         state.threadId = threads[0].id;
         state.messages = (await api.messages(state.threadId)).messages;
+        applyThreadMode(threads[0]);
+        await resumeThreadJob(threads[0]);
       } else {
         const result = await api.createThread();
         state.threads = [result.thread];
         state.threadId = result.thread.id;
         state.messages = [];
+        applyThreadMode(result.thread);
       }
       state.initialized = true;
     } catch (cause) {
@@ -66,6 +136,10 @@ async function createThread(title = "新对话") {
     state.messages = [];
     state.draft = "";
     state.initialized = true;
+    applyThreadMode(result.thread);
+    stopLocalJobPolling();
+    state.localJob = null;
+    state.localEvents = [];
   } catch (cause) {
     state.error = cause instanceof ApiError ? cause.message : "新建对话失败";
   } finally {
@@ -81,6 +155,9 @@ async function selectThread(threadId: string) {
     state.messages = (await api.messages(threadId)).messages;
     state.threadId = threadId;
     state.draft = "";
+    const thread = state.threads.find((item) => item.id === threadId);
+    applyThreadMode(thread);
+    await resumeThreadJob(thread);
   } catch (cause) {
     state.error = cause instanceof ApiError ? cause.message : "对话加载失败";
   } finally {
@@ -150,23 +227,48 @@ async function send(content = state.draft) {
       content: question,
       pageContext: state.pageContext,
       selection: state.selection,
+      mode: state.mode,
+      repoScope: state.repoScope,
+      targetRef: state.targetRef,
     });
     const index = state.messages.findIndex((message) => message.id === optimistic.id);
     if (index >= 0) state.messages[index] = result.userMessage;
-    state.messages.push(result.assistantMessage);
+    if (result.assistantMessage) state.messages.push(result.assistantMessage);
+    if (result.effectiveMode === "repository") state.mode = "repository";
     const thread = state.threads.find((item) => item.id === state.threadId);
     if (thread) {
       if (thread.title === "新对话") thread.title = question.slice(0, 50);
-      thread.updatedAt = result.assistantMessage.createdAt;
+      thread.updatedAt = result.assistantMessage?.createdAt || result.job?.updatedAt || new Date().toISOString();
+      thread.mode = state.mode;
+      thread.repoScope = state.repoScope;
+      thread.targetRef = state.targetRef;
+      thread.runnerJobId = result.job?.id || null;
       sortThreads();
     }
     state.selection = "";
+    if (result.job) {
+      state.localJob = result.job;
+      state.localEvents = [];
+      await pollRepositoryJob(result.job.id, state.threadId);
+    }
   } catch (cause) {
     state.messages = state.messages.filter((message) => message.id !== optimistic.id);
     state.error = cause instanceof ApiError ? cause.message : "AI 回答失败";
     state.draft = question;
   } finally {
-    state.sending = false;
+    if (!state.localJob || ["completed", "failed", "cancelled"].includes(state.localJob.status)) {
+      state.sending = false;
+    }
+  }
+}
+
+async function cancelRepositoryJob() {
+  if (!state.localJob) return;
+  try {
+    await api.cancelLocalAnalysisJob(state.localJob.id);
+    state.localJob = { ...state.localJob, status: "cancel_requested" };
+  } catch (cause) {
+    state.error = cause instanceof ApiError ? cause.message : "取消仓库分析失败";
   }
 }
 
@@ -198,5 +300,6 @@ export function useAIChat() {
     setSelection,
     setPageContext,
     openWithSelection,
+    cancelRepositoryJob,
   };
 }

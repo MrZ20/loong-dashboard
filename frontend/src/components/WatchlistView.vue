@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { communityItemKey, watchlistMeta } from "../data/workspace";
+import { communityItemKey } from "../domain/community-item";
 import type { CommunityItem, WatchlistMeta } from "../types";
 import Octicon from "./Octicon.vue";
 
 const props = defineProps<{
   items: CommunityItem[];
+  metaByKey: Record<string, WatchlistMeta>;
 }>();
 
 const emit = defineEmits<{
@@ -24,7 +25,7 @@ const fallbackMeta: WatchlistMeta = {
 };
 
 function metaFor(item: CommunityItem) {
-  return watchlistMeta[communityItemKey(item)] ?? fallbackMeta;
+  return props.metaByKey[communityItemKey(item)] ?? fallbackMeta;
 }
 
 const filteredItems = computed(() =>

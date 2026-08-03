@@ -7,6 +7,7 @@
     "dev": "vite",
     "dev:service": "npm run build && wrangler dev --config wrangler.toml --port 4174",
     "db:migrate:local": "wrangler d1 migrations apply DB --local --config wrangler.toml",
+    "runner": "node local-runner/index.mjs",
     "build": "vite build && node scripts/prepare-sites-build.mjs",
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview",

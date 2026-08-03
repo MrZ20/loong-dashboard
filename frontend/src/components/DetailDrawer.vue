@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import type { CommunityItem } from "../types";
+import type {
+  AnalysisDocument,
+  CommunityItem,
+  LocalAnalysisEvent,
+  LocalAnalysisJob,
+  PromptFeatureKey,
+  RefreshTaskType,
+} from "../types";
 import DiffViewer from "./DiffViewer.vue";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 import Octicon from "./Octicon.vue";
@@ -8,19 +15,28 @@ import Octicon from "./Octicon.vue";
 const props = defineProps<{
   item: CommunityItem;
   watched: boolean;
-  analysisMd?: string;
+  analysis?: AnalysisDocument | null;
   analyzing?: boolean;
   diffLoading?: boolean;
+  taskLoading?: RefreshTaskType | "";
+  localJob?: LocalAnalysisJob | null;
+  localEvents?: LocalAnalysisEvent[];
 }>();
 
 const emit = defineEmits<{
   close: [];
   "toggle-watch": [item: CommunityItem];
-  analyze: [item: CommunityItem, prompt: string];
+  analyze: [item: CommunityItem, requirement: string];
+  "manage-prompt": [feature: PromptFeatureKey];
   "load-diff": [item: CommunityItem];
+  "refresh-facts": [item: CommunityItem];
+  "update-summary": [item: CommunityItem];
+  reclassify: [item: CommunityItem];
+  "cancel-analysis": [];
 }>();
 const drawer = ref<HTMLElement | null>(null);
-const analysisPrompt = ref("");
+const analysisRequirement = ref("");
+const analysisMd = computed(() => props.analysis?.contentMd || "");
 
 const stateLabel = computed(() => {
   if (props.item.lastEventType === "reopened") return "Reopened";
@@ -78,6 +94,44 @@ const reviewDecisionText = computed(() => {
   if (value === "review_required") return "等待 Review";
   return "尚无明确结论";
 });
+
+function detailTime(value: string | null | undefined) {
+  if (!value) return "尚无记录";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function shortSha(value: string | null | undefined) {
+  return value ? value.slice(0, 10) : "无";
+}
+
+function evidenceLabel(value: string | null | undefined) {
+  return {
+    complete: "证据完整",
+    partial: "证据部分完整",
+    insufficient: "证据不足",
+  }[value || "insufficient"] || "证据不足";
+}
+
+const summaryStatusText = computed(() => ({
+  missing: "缺失",
+  queued: "已排队",
+  running: "生成中",
+  ready: "可用",
+  stale: "已过期",
+  failed: "失败",
+}[props.item.summaryStatus || "missing"]));
+
+const classificationStatusText = computed(() => ({
+  missing: "尚未分类",
+  ready: "当前版本",
+  possibly_stale: "可能过期",
+  failed: "失败",
+}[props.item.classificationStatus || "missing"]));
 
 onMounted(() => drawer.value?.focus());
 </script>
@@ -159,11 +213,65 @@ onMounted(() => drawer.value?.focus());
           </div>
         </header>
 
+        <section class="detail-section detail-refresh-state">
+          <div class="detail-section__title">
+            <h3>数据版本与刷新</h3>
+            <span>打开详情仅从数据库读取</span>
+          </div>
+          <div class="detail-version-grid">
+            <article>
+              <span>GitHub 事实</span>
+              <strong>{{ detailTime(item.factsRefreshedAt) }}</strong>
+              <small>Head {{ shortSha(item.headSha) }}</small>
+            </article>
+            <article :data-status="item.summaryStatus">
+              <span>摘要</span>
+              <strong>{{ summaryStatusText }}</strong>
+              <small>Head {{ shortSha(item.summaryVersion?.headSha) }} · {{ item.summaryVersion?.promptVersion || '无 Prompt 版本' }}</small>
+              <small>{{ item.summaryVersion?.model || '无模型记录' }} · {{ item.summaryVersion?.provider || '无 Provider 记录' }} · {{ evidenceLabel(item.summaryVersion?.evidenceCompleteness) }}</small>
+            </article>
+            <article :data-status="item.classificationStatus">
+              <span>分类</span>
+              <strong>{{ classificationStatusText }}</strong>
+              <small>Head {{ shortSha(item.classificationVersion?.headSha) }} · {{ detailTime(item.classificationVersion?.generatedAt) }}</small>
+              <small>{{ item.domainAssessment?.taxonomyVersion || '无 Taxonomy 版本' }} · 置信度 {{ Math.round((item.domainAssessment?.confidence || 0) * 100) }}%</small>
+            </article>
+            <article :data-status="item.deepAnalysisStatus">
+              <span>深度分析</span>
+              <strong>{{ item.deepAnalysisStatus === 'outdated' ? '基于旧版本' : item.deepAnalysisStatus === 'ready' ? '当前版本' : item.deepAnalysisStatus === 'failed' ? '失败' : '尚未生成' }}</strong>
+              <small>Head {{ shortSha(item.deepAnalysisHeadSha) }}</small>
+            </article>
+          </div>
+          <div class="detail-refresh-actions">
+            <button
+              class="button button--secondary"
+              :disabled="Boolean(taskLoading) || analyzing"
+              @click="emit('refresh-facts', item)"
+            >
+              <Octicon name="sync" :size="14" :class="{ spinning: taskLoading === 'facts' }" />刷新社区事实
+            </button>
+            <button
+              class="button button--secondary"
+              :disabled="Boolean(taskLoading) || analyzing"
+              @click="emit('update-summary', item)"
+            >
+              <Octicon name="copilot" :size="14" :class="{ spinning: taskLoading === 'summary' }" />更新摘要
+            </button>
+            <button
+              class="button button--secondary"
+              :disabled="Boolean(taskLoading) || analyzing"
+              @click="emit('reclassify', item)"
+            >
+              <Octicon name="tag" :size="14" :class="{ spinning: taskLoading === 'classification' }" />重新分类
+            </button>
+          </div>
+        </section>
+
         <section v-if="item.kind === 'pr' && item.reviewSignal" class="detail-section review-signals">
           <div class="detail-section__title">
             <h3>PR Review 信号</h3>
             <span>
-              {{ item.reviewSignal.completeness === "full" ? "GitHub 实时信号" : "部分信号，详情打开时补采" }}
+              {{ item.reviewSignal.completeness === "full" ? "已保存的 GitHub 事实" : "部分信号；需手动刷新社区事实" }}
             </span>
           </div>
           <div
@@ -287,39 +395,94 @@ onMounted(() => drawer.value?.focus());
               />
             </span>
             <div>
-              <strong>正在准备变更统计</strong>
-              <p>详情默认只读取文件路径和增删行数，不会提前返回具体代码内容。</p>
+              <strong>数据库中尚无变更统计</strong>
+              <p>请使用“刷新社区事实”；打开详情本身不会请求 GitHub 或改变新鲜度状态。</p>
             </div>
           </div>
         </section>
 
         <section class="detail-section deep-analysis">
-          <label class="prompt-field detail-analysis-prompt">
-            <span>本次深度分析补充要求（可选）</span>
-            <textarea
-              v-model="analysisPrompt"
-              rows="3"
-              maxlength="5000"
-              placeholder="例如：重点分析对 MRV2、多卡回归和 vLLM-Ascend 兼容性的影响"
-            />
-          </label>
           <div class="detail-section__title">
             <div>
               <span class="eyebrow">AI INSIGHT</span>
               <h3>深度分析</h3>
             </div>
-            <button
-              class="button button--primary"
-              :disabled="analyzing"
-              @click="emit('analyze', item, analysisPrompt)"
-            >
-              <Octicon
-                :name="analyzing ? 'sync' : 'copilot'"
-                :size="15"
-                :class="{ spinning: analyzing }"
-              />
-              {{ analyzing ? "分析中…" : analysisMd ? "重新分析" : "开始深度分析" }}
-            </button>
+            <div class="deep-analysis__actions">
+              <button
+                class="button button--secondary"
+                @click="emit('manage-prompt', item.kind === 'pr' ? 'pr_deep_analysis' : 'issue_deep_analysis')"
+              >
+                <Octicon name="gear" :size="14" />AI 管理
+              </button>
+              <button
+                class="button button--primary"
+                :disabled="analyzing || Boolean(taskLoading)"
+                @click="emit('analyze', item, analysisRequirement)"
+              >
+                <Octicon
+                  :name="analyzing ? 'sync' : 'copilot'"
+                  :size="15"
+                  :class="{ spinning: analyzing }"
+                />
+                {{
+                  analyzing
+                    ? "分析中…"
+                    : item.deepAnalysisStatus === 'failed'
+                      ? "继续上一次分析"
+                      : analysisMd
+                        ? "重新分析当前版本"
+                        : "开始深度分析"
+                }}
+              </button>
+            </div>
+          </div>
+
+          <label class="deep-analysis__requirement">
+            <span>本次补充分析要求（可选）</span>
+            <textarea
+              v-model="analysisRequirement"
+              maxlength="4000"
+              rows="3"
+              placeholder="例如：重点检查多卡场景下的生命周期与异常清理。该内容只调整关注重点，不会覆盖系统证据规则。"
+            />
+          </label>
+
+          <div v-if="analysis" class="deep-analysis__metadata">
+            <span>Head {{ shortSha(analysis.headSha) }}</span>
+            <span>{{ analysis.promptType || '深度分析' }} · {{ analysis.promptVersion || '无 Prompt 版本' }}</span>
+            <span>{{ analysis.model || '无模型记录' }} · {{ analysis.provider || '无 Provider 记录' }}</span>
+            <span>{{ evidenceLabel(analysis.evidenceCompleteness) }} · {{ analysis.versionStatus === 'outdated' ? '基于旧版本' : '当前版本' }}</span>
+            <span v-if="analysis.localEvidence">已核对本地源码</span>
+          </div>
+
+          <div v-if="localJob" class="local-analysis-terminal" :data-status="localJob.status">
+            <header>
+              <div>
+                <span class="local-analysis-terminal__lamp" />
+                <strong>OpenCode 本地分析</strong>
+                <small>{{ localJob.providerId || '默认 Provider' }} / {{ localJob.modelId || '默认 Model' }}</small>
+              </div>
+              <button
+                v-if="!['completed', 'failed', 'cancelled'].includes(localJob.status)"
+                class="button button--secondary"
+                :disabled="localJob.status === 'cancel_requested'"
+                @click="emit('cancel-analysis')"
+              >
+                <Octicon name="stop" :size="13" />{{ localJob.status === 'cancel_requested' ? '正在取消' : '取消运行' }}
+              </button>
+            </header>
+            <div class="local-analysis-terminal__events" aria-live="polite">
+              <p v-if="!localEvents?.length"><code>[Queue]</code> 等待本地 Runner 接收任务…</p>
+              <p v-for="event in localEvents" :key="event.sequence" :data-level="event.level">
+                <time>{{ new Date(event.createdAt).toLocaleTimeString('zh-CN', { hour12: false }) }}</time>
+                <code>[{{ event.source }}]</code>
+                <span>{{ event.message }}</span>
+              </p>
+            </div>
+            <footer>
+              <span>事件已持久化，刷新页面后可恢复</span>
+              <strong v-if="localJob.error">{{ localJob.error }}</strong>
+            </footer>
           </div>
 
           <div v-if="!analysisMd && !analyzing" class="analysis-placeholder">
@@ -340,6 +503,12 @@ onMounted(() => drawer.value?.focus());
           </div>
 
           <div v-else class="analysis-result analysis-result--markdown">
+            <div v-if="analysis?.codeReferences?.length" class="analysis-code-references">
+              <strong>代码引用</strong>
+              <code v-for="reference in analysis.codeReferences" :key="`${reference.repository}:${reference.commitSha}:${reference.path}:${reference.startLine}`">
+                {{ reference.repository }}@{{ reference.commitSha.slice(0, 12) }} · {{ reference.path }} · {{ reference.symbol }}<template v-if="reference.startLine">:{{ reference.startLine }}<template v-if="reference.endLine !== reference.startLine">-{{ reference.endLine }}</template></template>
+              </code>
+            </div>
             <MarkdownRenderer :content="analysisMd" />
           </div>
         </section>

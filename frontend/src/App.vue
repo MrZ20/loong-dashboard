@@ -23,16 +23,18 @@ import { useAppPreferences } from "./composables/useAppPreferences";
 import { useAuthSession } from "./composables/useAuthSession";
 import { useCommunityDetail } from "./composables/useCommunityDetail";
 import { useCommunityWorkspace } from "./composables/useCommunityWorkspace";
-import { communityItemKey } from "./data/workspace";
+import { communityItemKey } from "./domain/community-item";
 import type {
   AppView,
   CommunityItem,
+  PromptFeatureKey,
   RepositoryId,
   UserAccount,
 } from "./types";
 
 const sidebarOpen = ref(false);
 const toast = ref("");
+const settingsPromptFeature = ref<PromptFeatureKey | null>(null);
 const { setPageContext } = useAIChat();
 const { sidebarCollapsed, theme } = useAppPreferences();
 
@@ -55,12 +57,15 @@ const {
   repositoryData,
   searchQuery,
   selectedDomain,
+  sortMode,
+  sortOptions,
   stateFilter,
   stateFilterOptions,
   todayLoading,
   todaySummaries,
   toggleWatch: updateWatch,
   watchedKeys,
+  watchlistMeta,
   watchlistItems,
   workspaceHeader,
 } = useCommunityWorkspace();
@@ -74,11 +79,16 @@ function showToast(message: string) {
 
 const {
   analyzeSelectedItem,
+  cancelDetailAnalysis,
   closeDetail,
   detailAnalysis,
   detailAnalyzing,
   detailDiffLoading,
+  detailTaskLoading,
+  detailLocalJob,
+  detailLocalEvents,
   loadSelectedDiff,
+  refreshSelectedItem,
   selectedItem,
   selectCommunityItem,
 } = useCommunityDetail(showToast);
@@ -129,7 +139,14 @@ function changeRepo(repo: RepositoryId) {
 }
 
 function changeView(view: AppView) {
+  if (view === "settings") settingsPromptFeature.value = null;
   activeView.value = view;
+}
+
+function openPromptSettings(feature: PromptFeatureKey) {
+  settingsPromptFeature.value = feature;
+  activeView.value = "settings";
+  closeDetail();
 }
 
 async function refreshData() {
@@ -216,10 +233,14 @@ onMounted(initializeAuth);
       />
 
       <div class="content-area">
-        <AIInsightsView v-if="activeView === 'insights'" />
+        <AIInsightsView
+          v-if="activeView === 'insights'"
+          @manage-prompt="openPromptSettings"
+        />
         <WatchlistView
           v-else-if="activeView === 'watchlist'"
           :items="watchlistItems"
+          :meta-by-key="watchlistMeta"
           @select="selectCommunityItem"
           @toggle="toggleWatch"
         />
@@ -227,17 +248,31 @@ onMounted(initializeAuth);
           v-else-if="activeView === 'impact'"
           @update:count="impactCount = $event"
         />
-        <DomainMapView v-else-if="activeView === 'domains'" />
+        <DomainMapView
+          v-else-if="activeView === 'domains'"
+          @manage-prompt="openPromptSettings"
+        />
         <TechnicalDocsView
           v-else-if="activeView === 'docs'"
           @update:count="documentCount = $event"
+          @manage-prompt="openPromptSettings"
         />
-        <AIChatView v-else-if="activeView === 'chat'" />
+        <AIChatView
+          v-else-if="activeView === 'chat'"
+          @manage-prompt="openPromptSettings"
+        />
         <SettingsView
           v-else-if="activeView === 'settings'"
+          :initial-tab="settingsPromptFeature ? 'management' : undefined"
+          :initial-prompt-feature="settingsPromptFeature || undefined"
+          :initial-repo="activeRepo"
           @update:user="updateCurrentUser"
         />
-        <DailyAnalysis v-else-if="activeView === 'analysis'" :repo="activeRepo" />
+        <DailyAnalysis
+          v-else-if="activeView === 'analysis'"
+          :repo="activeRepo"
+          @manage-prompt="openPromptSettings"
+        />
 
         <template v-else>
           <InsightBanner
@@ -271,7 +306,7 @@ onMounted(initializeAuth);
                 </span>
                 <span>
                   <strong>筛选社区动态</strong>
-                  <small>按技术领域和当前状态缩小范围</small>
+                  <small>按技术领域、当前状态和排序方式查看</small>
                 </span>
               </div>
 
@@ -290,6 +325,14 @@ onMounted(initializeAuth);
                   icon="filter"
                   align="right"
                   :options="stateFilterOptions"
+                />
+                <FilterDropdown
+                  v-model="sortMode"
+                  class="filter-dropdown--sort"
+                  label="排序方式"
+                  icon="sort-desc"
+                  align="right"
+                  :options="sortOptions"
                 />
               </div>
             </div>
@@ -312,12 +355,20 @@ onMounted(initializeAuth);
       v-if="selectedItem"
       :item="selectedItem"
       :watched="watchedKeys.has(communityItemKey(selectedItem))"
-      :analysis-md="detailAnalysis?.contentMd"
+      :analysis="detailAnalysis"
       :analyzing="detailAnalyzing"
       :diff-loading="detailDiffLoading"
+      :task-loading="detailTaskLoading"
+      :local-job="detailLocalJob"
+      :local-events="detailLocalEvents"
       @toggle-watch="toggleWatch"
       @analyze="analyzeSelectedItem"
+      @cancel-analysis="cancelDetailAnalysis"
+      @manage-prompt="openPromptSettings"
       @load-diff="loadSelectedDiff"
+      @refresh-facts="refreshSelectedItem($event, 'facts')"
+      @update-summary="refreshSelectedItem($event, 'summary')"
+      @reclassify="refreshSelectedItem($event, 'classification')"
       @close="closeDetail"
     />
 

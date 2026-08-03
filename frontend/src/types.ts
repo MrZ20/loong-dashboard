@@ -12,9 +12,53 @@ export type AppView =
   | "chat"
   | "settings";
 export type ThemeMode = "light" | "dark";
+export type RefreshTaskType = "facts" | "summary" | "classification" | "deep_analysis";
+export type RefreshRule =
+  | "updated_since_success"
+  | "code_only"
+  | "code_or_body"
+  | "any_update"
+  | "first_only"
+  | "manual";
+export type PromptFeatureKey =
+  | "pr_triage"
+  | "issue_triage"
+  | "pr_deep_analysis"
+  | "issue_deep_analysis"
+  | "vllm_classification"
+  | "vllm_ascend_classification"
+  | "vllm_taxonomy_refresh"
+  | "vllm_ascend_taxonomy_refresh"
+  | "daily_report"
+  | "domain_architecture_map"
+  | "technical_document_generation"
+  | "cross_repo_insight"
+  | "local_code_insight"
+  | "chat_assistant"
+  | "repository_code_chat";
+export type AIExecutionMode = "environment" | "account_api" | "opencode";
+export type AITaskKey =
+  | "vllm_pr_summary"
+  | "vllm_issue_summary"
+  | "vllm_pr_deep_analysis"
+  | "vllm_issue_deep_analysis"
+  | "vllm_classification"
+  | "vllm_taxonomy_refresh"
+  | "vllm_daily_report"
+  | "vllm_ascend_pr_summary"
+  | "vllm_ascend_issue_summary"
+  | "vllm_ascend_pr_deep_analysis"
+  | "vllm_ascend_issue_deep_analysis"
+  | "vllm_ascend_classification"
+  | "vllm_ascend_taxonomy_refresh"
+  | "vllm_ascend_daily_report"
+  | "cross_repo_insight"
+  | "local_code_insight"
+  | "domain_architecture_map"
+  | "technical_document_generation"
+  | "chat_assistant"
+  | "repository_code_chat";
 export type ImpactLevel = "low" | "medium" | "high" | "critical";
-export type AIInsightKind = "risk" | "upstream" | "trend" | "collaboration";
-export type AIInsightSeverity = "critical" | "high" | "medium" | "low";
 export type AdaptationStatus =
   | "unreviewed"
   | "possibly_affected"
@@ -52,7 +96,21 @@ export interface DomainAssessment {
   confidenceLabel: "high" | "medium" | "low";
   matchedPaths: string[];
   matchedTerms: string[];
-  scores: Array<{ domain: string; score: number }>;
+  scores: Array<{
+    domain: string;
+    score: number;
+    sourceLines?: number;
+    sourceHits?: number;
+    codeownerHits?: number;
+    codeownerSpecificity?: number;
+    testHits?: number;
+    labelHits?: number;
+    titleHits?: number;
+    bodyHits?: number;
+    linkedHits?: number;
+  }>;
+  taxonomyVersion?: string;
+  matchedCodeownerRules?: string[];
 }
 
 export interface ReviewSignal {
@@ -109,6 +167,39 @@ export interface CommunityItem {
   summary: string;
   summarySource?: "ai" | "excerpt";
   summaryUpdatedAt?: string | null;
+  factsRefreshedAt?: string | null;
+  labels?: string[];
+  baseSha?: string | null;
+  headSha?: string | null;
+  mergeCommitSha?: string | null;
+  summaryStatus?: "missing" | "queued" | "running" | "ready" | "stale" | "failed";
+  summaryVersion?: {
+    headSha: string | null;
+    bodyHash: string;
+    filesHash: string;
+    promptType: string;
+    promptVersion: string;
+    model: string;
+    provider: string;
+    source: "ai" | "excerpt";
+    evidenceCompleteness: "complete" | "partial" | "insufficient";
+    structured: Record<string, unknown>;
+    generatedAt: string | null;
+    evidence: string[];
+    error: string | null;
+  };
+  classificationStatus?: "missing" | "ready" | "possibly_stale" | "failed";
+  classificationVersion?: {
+    headSha: string | null;
+    bodyHash: string;
+    filesHash: string;
+    generatedAt: string | null;
+    locked: boolean;
+    details: Record<string, unknown>;
+    error: string | null;
+  };
+  deepAnalysisStatus?: "missing" | "running" | "ready" | "outdated" | "failed";
+  deepAnalysisHeadSha?: string | null;
   body: string;
   bodyMd?: string;
   htmlUrl?: string | null;
@@ -136,6 +227,101 @@ export interface CommunityItem {
   };
 }
 
+export type LocalAnalysisJobStatus =
+  | "queued"
+  | "claimed"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancel_requested"
+  | "cancelled";
+
+export interface LocalAnalysisEvent {
+  id: number;
+  jobId: string;
+  sequence: number;
+  eventType: string;
+  source: "runner" | "git" | "opencode" | "system" | string;
+  level: "info" | "warning" | "error";
+  message: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface LocalAnalysisJob {
+  id: string;
+  jobType: string;
+  subjectKind: string;
+  subjectKey: string;
+  repoScope: string;
+  itemId: string | null;
+  chatThreadId: string | null;
+  analysisDocumentId: string | null;
+  sessionScope: string;
+  baseSha: string | null;
+  headSha: string | null;
+  targetRef: string;
+  providerId: string;
+  modelId: string;
+  status: LocalAnalysisJobStatus;
+  localEvidence: boolean;
+  error: string | null;
+  result: Record<string, unknown>;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  updatedAt: string;
+}
+
+export interface LocalRunnerSettingsState {
+  settings: {
+    enabled: boolean;
+    defaultProvider: string;
+    defaultModel: string;
+    maxConcurrency: number;
+    worktreeRetentionHours: number;
+    autoFetch: boolean;
+    timeoutSeconds: number;
+  };
+  runner: {
+    id: string | null;
+    online: boolean;
+    status: string;
+    version: string;
+    opencodeVersion: string;
+    authConfigured: boolean;
+    readonlyVerified: boolean;
+    repositories: Record<string, { configured: boolean; exists: boolean; git: boolean; head: string | null }>;
+    providers: Array<{ id: string; name: string; models: Array<{ id: string; name: string }> }>;
+    capabilities: Record<string, unknown>;
+    activeJobs: number;
+    lastSeenAt: string | null;
+    lastError: string | null;
+  };
+}
+
+export interface GitHubCredentialState {
+  configured: boolean;
+  source: "account" | "environment" | "none";
+  tokenHint: string;
+  verifiedLogin: string;
+  rateLimitRemaining: number | null;
+  rateLimitLimit: number | null;
+  rateLimitResetAt: string | null;
+  lastVerifiedAt: string | null;
+  lastError: string | null;
+}
+
+export interface CodeReference {
+  repository: "vllm" | "vllm-ascend";
+  commitSha: string;
+  path: string;
+  symbol: string;
+  startLine: number | null;
+  endLine: number | null;
+  reason: string;
+}
+
 export interface RepositoryMeta {
   id: RepositoryId;
   owner: string;
@@ -146,6 +332,27 @@ export interface RepositoryMeta {
   openIssues: number;
   lastSyncedAt?: string | null;
   syncStatus?: string;
+  refreshTasks?: RefreshTaskState[];
+}
+
+export interface RefreshTaskState {
+  repoId: string;
+  taskType: RefreshTaskType;
+  autoEnabled: boolean;
+  intervalMinutes: number | null;
+  activeRangeHours: number;
+  refreshRule: RefreshRule;
+  maxItems: number;
+  includeCiChanges: boolean;
+  includeCommentChanges: boolean;
+  status: "idle" | "queued" | "running" | "ready" | "failed";
+  lastAttemptedAt: string | null;
+  lastSuccessfulAt: string | null;
+  watermarkUpdatedAt: string | null;
+  nextScheduledAt: string | null;
+  lastError: string | null;
+  pendingCount: number;
+  stale: boolean;
 }
 
 export interface WatchlistMeta {
@@ -225,38 +432,9 @@ export interface TodaySummary {
 export interface DomainMapStage {
   label: string;
   repository: string;
+  responsibility?: string;
   paths: string[];
   symbols: string[];
-}
-
-export interface DomainMap {
-  id: string;
-  name: string;
-  description: string;
-  pipelinePosition: string;
-  keywords: string[];
-  activity: {
-    pulls: number;
-    issues: number;
-    risks: number;
-    trend: "升温" | "稳定" | "降温";
-  };
-  stages: DomainMapStage[];
-  currentWork: string[];
-  insight: string;
-}
-
-export interface AIInsight {
-  id: string;
-  kind: AIInsightKind;
-  severity: AIInsightSeverity;
-  title: string;
-  summary: string;
-  domain: string;
-  confidence: number;
-  sources: string[];
-  action: string;
-  window: "24h" | "7d";
 }
 
 export interface AuthUser {
@@ -275,11 +453,78 @@ export interface AnalysisDocument {
   summaryMd: string;
   contentMd: string;
   prompt: string;
+  promptTemplateId: string | null;
+  promptTemplateName: string;
+  promptRevision: number;
   model: string;
+  baseSha: string | null;
+  headSha: string | null;
+  bodyHash: string;
+  filesHash: string;
+  promptType: string;
+  promptVersion: string;
+  runner: string;
+  provider: string;
+  analysisSource: "ai" | "unknown";
+  evidenceCompleteness: "complete" | "partial" | "insufficient";
+  versionStatus: "current" | "outdated";
   status: string;
   sourceRefs: string[];
+  opencodeSessionId?: string | null;
+  runnerJobId?: string | null;
+  codeReferences?: CodeReference[];
+  localEvidence?: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AIPromptTemplate {
+  id: string;
+  featureKey: PromptFeatureKey;
+  name: string;
+  content: string;
+  revision: number;
+  builtIn: boolean;
+  active: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface AIPromptFeature {
+  key: PromptFeatureKey;
+  name: string;
+  description: string;
+  group: "社区条目" | "分类管理" | "分析文档" | "交互助手";
+  contextSources: string[];
+  promptVersion: string;
+  activeTemplateId: string;
+  templates: AIPromptTemplate[];
+}
+
+export interface ClassificationTaxonomyState {
+  repoId: "vllm" | "vllm-ascend";
+  repositoryName: string;
+  baseVersion: string;
+  effectiveVersion: string;
+  evidenceRevision: string;
+  status: "running" | "ready" | "failed";
+  lastRefreshedAt: string | null;
+  lastError: string | null;
+  analysisMd: string;
+  promptTemplateName: string;
+  categories: Array<{
+    id: string;
+    name: string;
+    description: string;
+    sourcePathCount: number;
+    testPathCount: number;
+  }>;
+  newDomainProposals: Array<{
+    id: string;
+    name: string;
+    rationale: string;
+    evidence: string[];
+  }>;
 }
 
 export interface TechnicalDocument {
@@ -307,6 +552,15 @@ export interface ChatThread {
   id: string;
   title: string;
   context?: Record<string, unknown>;
+  mode?: "normal" | "repository";
+  repoScope?: string;
+  targetRef?: string;
+  providerId?: string;
+  modelId?: string;
+  opencodeSessionId?: string | null;
+  opencodeCommitSha?: string;
+  runnerJobId?: string | null;
+  localEvidence?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -334,8 +588,43 @@ export interface AIProviderConfig {
   tokenHint: string;
   active: boolean;
   builtIn: boolean;
+  usageCount?: number;
+  usedBy?: AITaskKey[];
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface AITaskSetting {
+  key: AITaskKey;
+  groupKey: "vllm" | "vllm-ascend" | "insights" | "knowledge" | "chat";
+  groupName: string;
+  name: string;
+  description: string;
+  repoScope: "vllm" | "vllm-ascend" | "global";
+  featureKey: PromptFeatureKey;
+  executionNote: string;
+  executionMode: AIExecutionMode;
+  providerConfigId: string;
+  opencodeProviderId: string;
+  opencodeModelId: string;
+  promptTemplateId: string;
+  promptTemplateName: string;
+  promptRevision: number;
+  lastRunAt: string | null;
+  lastStatus: "never" | "queued" | "running" | "ready" | "failed";
+  lastError: string | null;
+  persisted: boolean;
+}
+
+export interface AITaskGroup {
+  key: AITaskSetting["groupKey"];
+  name: string;
+  tasks: AITaskSetting[];
+}
+
+export interface AIManagementState {
+  groups: AITaskGroup[];
+  runner: LocalRunnerSettingsState["runner"];
 }
 
 export interface DomainMapApi {
@@ -343,27 +632,56 @@ export interface DomainMapApi {
   name: string;
   description: string;
   pipeline: string;
+  taxonomyDomains: {
+    vllm: string[];
+    "vllm-ascend": string[];
+  };
+  architecture: {
+    source: "maintained-baseline";
+    executionFlow: Array<{
+      id: string;
+      label: string;
+      order: number;
+    }>;
+    updatedByDailyActivity: false;
+  };
   stages: DomainMapStage[];
   activity: {
+    window: "7d";
     pulls: number;
     issues: number;
     risks: number;
     trend: string;
     latestChange: string | null;
   };
-  changedPaths: string[];
-  changes: Array<{
-    id: string;
-    repo: RepositoryId;
-    kind: CommunityKind;
-    number: number;
-    title: string;
-    updatedAt: string;
-  }>;
+  today: {
+    date: string;
+    timezone: "Asia/Shanghai";
+    changedPaths: string[];
+    changes: Array<{
+      id: string;
+      eventId: string;
+      eventType: string;
+      repo: RepositoryId;
+      kind: CommunityKind;
+      number: number;
+      title: string;
+      updatedAt: string;
+      occurredAt: string;
+    }>;
+  };
   snapshot: {
     date: string;
     architectureMd: string;
     insightMd: string;
     changedPaths: string[];
+    promptTemplateId: string | null;
+    promptTemplateName: string;
+    promptRevision: number;
+    promptVersion: string;
+    model: string;
+    provider: string;
+    generationSource: "api" | "fallback" | "rules" | string;
+    createdAt: string;
   } | null;
 }

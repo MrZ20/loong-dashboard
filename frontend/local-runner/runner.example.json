@@ -1,0 +1,14 @@
+{
+  "dashboardUrl": "http://127.0.0.1:4174",
+  "runnerToken": "set-the-same-value-as-LOCAL_RUNNER_TOKEN",
+  "repositories": {
+    "vllm": "../vllm",
+    "vllm-ascend": "../vllm-ascend"
+  },
+  "manageOpenCodeServer": true,
+  "opencodePort": 4096,
+  "maxConcurrency": 1,
+  "worktreeRetentionHours": 24,
+  "autoFetch": true,
+  "timeoutSeconds": 900
+}

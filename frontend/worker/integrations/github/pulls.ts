@@ -3,14 +3,20 @@ import {
   type PullReviewFacts,
   type ReviewCheck,
   type ReviewSignal,
-} from "../../domain/community-intelligence";
+} from "../../domain/review-signals";
 import { parseUnifiedDiff } from "../../domain/diff";
 import type { WorkerEnv } from "../../db";
 import {
+  includesRefreshBoundary,
+  isBeforeRefreshBoundary,
+} from "../../domain/refresh-policy";
+import {
   githubFetch,
+  githubFetchPage,
   githubGraphqlFetch,
   optionalGithubFetch,
 } from "./client";
+import { HttpError } from "../../http";
 
 export async function fetchRecentIssues(
   env: WorkerEnv,
@@ -29,6 +35,97 @@ export async function fetchRecentIssues(
     if (batch.length < perPage) break;
   }
   return issues.slice(0, targetCount);
+}
+
+type IncrementalWindow = {
+  boundary: string | null;
+  initialCutoff: string;
+};
+
+async function fetchIncrementalList(
+  env: WorkerEnv,
+  path: string,
+  window: IncrementalWindow,
+  accept: (item: Record<string, any>) => boolean,
+) {
+  const items = new Map<number, Record<string, any>>();
+  const lowerBound = window.boundary ?? window.initialCutoff;
+  const maxPages = 100;
+  let reachedLowerBound = false;
+  let nextPath: string | null =
+    `${path}${path.includes("?") ? "&" : "?"}per_page=100`;
+  for (let page = 1; page <= maxPages && nextPath; page += 1) {
+    const response = await githubFetchPage<Array<Record<string, any>>>(
+      env,
+      nextPath,
+    );
+    const batch = response.data;
+    for (const item of batch) {
+      const updatedAt = String(item.updated_at ?? "");
+      if (
+        item.number &&
+        accept(item) &&
+        includesRefreshBoundary(updatedAt, lowerBound)
+      ) {
+        const number = Number(item.number);
+        const existing = items.get(number);
+        if (
+          !existing ||
+          updatedAt >= String(existing.updated_at ?? "")
+        ) {
+          items.set(number, item);
+        }
+      }
+    }
+    reachedLowerBound = batch.some((item) =>
+      isBeforeRefreshBoundary(String(item.updated_at ?? ""), lowerBound),
+    );
+    if (reachedLowerBound) {
+      break;
+    }
+    nextPath = response.nextPath;
+    if (!nextPath) reachedLowerBound = true;
+  }
+
+  // Never commit a successful watermark after a truncated scan. A later run
+  // must restart from the previous successful boundary instead of silently
+  // omitting older entries inside the configured active range.
+  if (!reachedLowerBound) {
+    throw new HttpError(
+      502,
+      "GitHub 增量范围过大，本次未完整到达刷新边界，成功水位保持不变",
+    );
+  }
+  return [...items.values()]
+    .sort((left, right) =>
+      String(right.updated_at ?? "").localeCompare(String(left.updated_at ?? "")),
+    );
+}
+
+export function fetchIncrementalPulls(
+  env: WorkerEnv,
+  base: string,
+  window: IncrementalWindow,
+) {
+  return fetchIncrementalList(
+    env,
+    `${base}/pulls?state=all&sort=updated&direction=desc`,
+    window,
+    () => true,
+  );
+}
+
+export function fetchIncrementalIssues(
+  env: WorkerEnv,
+  base: string,
+  window: IncrementalWindow,
+) {
+  return fetchIncrementalList(
+    env,
+    `${base}/issues?state=all&sort=updated&direction=desc`,
+    window,
+    (item) => !item.pull_request,
+  );
 }
 
 function normalizeCheckStatus(
@@ -91,7 +188,7 @@ function normalizeMergeability(
   return "unknown";
 }
 
-type PullSyncSnapshot = {
+export type PullSyncSnapshot = {
   diff: {
     files: number;
     additions: number;
@@ -109,14 +206,17 @@ export async function fetchPullSyncSnapshots(
   env: WorkerEnv,
   owner: string,
   name: string,
+  targetNumbers: readonly number[],
 ) {
   const snapshots = new Map<number, PullSyncSnapshot>();
-  if (!env.GITHUB_TOKEN) return snapshots;
+  const pending = new Set(targetNumbers.filter((number) => Number.isInteger(number)));
+  if (!env.GITHUB_TOKEN || !pending.size) return snapshots;
   const graphql = `
-    query PullReviewSignals($owner: String!, $name: String!) {
+    query PullReviewSignals($owner: String!, $name: String!, $cursor: String) {
       repository(owner: $owner, name: $name) {
         pullRequests(
-          first: 30
+          first: 20
+          after: $cursor
           states: [OPEN, CLOSED, MERGED]
           orderBy: { field: UPDATED_AT, direction: DESC }
         ) {
@@ -125,10 +225,13 @@ export async function fetchPullSyncSnapshots(
             state
             isDraft
             mergeable
+            mergeStateStatus
             reviewDecision
             changedFiles
             additions
             deletions
+            comments { totalCount }
+            reviews { totalCount }
             files(first: 100) {
               nodes {
                 path
@@ -144,7 +247,7 @@ export async function fetchPullSyncSnapshots(
                 commit {
                   statusCheckRollup {
                     state
-                    contexts(first: 50) {
+                    contexts(first: 20) {
                       nodes {
                         ... on CheckRun {
                           name
@@ -164,75 +267,100 @@ export async function fetchPullSyncSnapshots(
               }
             }
           }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
         }
       }
     }
   `;
-  const data = await githubGraphqlFetch<{
-    repository?: {
-      pullRequests: {
-        nodes: Array<Record<string, any> | null>;
-      };
-    } | null;
-  }>(env, graphql, { owner, name });
+  let cursor: string | null = null;
+  let hasNextPage = true;
+  let page = 0;
+  const maxPages = 100;
 
-  for (const pull of data.repository?.pullRequests.nodes ?? []) {
-    if (!pull?.number) continue;
-    const contexts =
-      pull.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-    const checks = mergeChecks(
-      contexts
+  while (pending.size && hasNextPage && page < maxPages) {
+    const data = await githubGraphqlFetch<{
+      repository?: {
+        pullRequests: {
+          nodes: Array<Record<string, any> | null>;
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        };
+      } | null;
+    }>(env, graphql, { owner, name, cursor });
+    const connection = data.repository?.pullRequests;
+    for (const pull of connection?.nodes ?? []) {
+      const number = Number(pull?.number ?? 0);
+      if (!number || !pending.has(number)) continue;
+      const contexts =
+        pull?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+      const checks = mergeChecks(
+        contexts
+          .filter(Boolean)
+          .map((context: Record<string, any>) => ({
+            name: context.name || context.context || "未命名检查",
+            status: normalizeCheckStatus(context.status || context.state, context.conclusion),
+            url: context.detailsUrl || context.targetUrl || undefined,
+          })),
+      );
+      const rollupState =
+        pull?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state ?? "";
+      const entries = (pull?.files?.nodes ?? [])
         .filter(Boolean)
-        .map((context: Record<string, any>) => ({
-          name: context.name || context.context || "未命名检查",
-          status: normalizeCheckStatus(context.status || context.state, context.conclusion),
-          url: context.detailsUrl || context.targetUrl || undefined,
-        })),
-    );
-    const rollupState =
-      pull.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state ?? "";
-    const entries = (pull.files?.nodes ?? [])
-      .filter(Boolean)
-      .map((file: Record<string, any>) => ({
-        path: String(file.path ?? ""),
-        additions: Number(file.additions ?? 0),
-        deletions: Number(file.deletions ?? 0),
-      }));
-    snapshots.set(Number(pull.number), {
-      diff: {
-        files: Number(pull.changedFiles ?? entries.length),
-        additions: Number(pull.additions ?? 0),
-        deletions: Number(pull.deletions ?? 0),
-        entries,
-        source: "graphql-files",
-        complete: !pull.files?.pageInfo?.hasNextPage,
-        statsOnly: true,
-        notice: pull.files?.pageInfo?.hasNextPage
-          ? "同步阶段已分析前 100 个修改文件；打开详情可补齐全部文件统计。"
-          : "同步阶段已获取修改文件统计；具体代码仍按需加载。",
-      },
-      reviewFacts: {
-        state: String(pull.state ?? "").toLowerCase(),
-        draft: Boolean(pull.isDraft),
-        mergeability: normalizeMergeability(pull.mergeable),
-        reviewDecision: normalizeReviewDecision(pull.reviewDecision),
-        changedFiles: Number(pull.changedFiles ?? entries.length),
-        additions: Number(pull.additions ?? 0),
-        deletions: Number(pull.deletions ?? 0),
-        checks,
-        ciStatus: normalizeCiStatus(
+        .map((file: Record<string, any>) => ({
+          path: String(file.path ?? ""),
+          additions: Number(file.additions ?? 0),
+          deletions: Number(file.deletions ?? 0),
+        }));
+      const filesComplete = !pull?.files?.pageInfo?.hasNextPage;
+      snapshots.set(number, {
+        diff: {
+          files: Number(pull?.changedFiles ?? entries.length),
+          additions: Number(pull?.additions ?? 0),
+          deletions: Number(pull?.deletions ?? 0),
+          entries,
+          source: "graphql-files",
+          complete: filesComplete,
+          statsOnly: true,
+          notice: filesComplete
+            ? "同步阶段已批量获取修改文件统计；具体代码仍按需加载。"
+            : "批量快照包含前 100 个文件；同步任务将继续补齐全部文件统计。",
+        },
+        reviewFacts: {
+          state: String(pull?.state ?? "").toLowerCase(),
+          draft: Boolean(pull?.isDraft),
+          mergeability: normalizeMergeability(
+            pull?.mergeable,
+            String(pull?.mergeStateStatus ?? ""),
+          ),
+          mergeState: String(pull?.mergeStateStatus ?? "").toLowerCase(),
+          reviewDecision: normalizeReviewDecision(pull?.reviewDecision),
+          changedFiles: Number(pull?.changedFiles ?? entries.length),
+          additions: Number(pull?.additions ?? 0),
+          deletions: Number(pull?.deletions ?? 0),
+          comments:
+            Number(pull?.comments?.totalCount ?? 0) +
+            Number(pull?.reviews?.totalCount ?? 0),
           checks,
-          String(rollupState).toUpperCase() === "SUCCESS"
-            ? "success"
-            : String(rollupState).toUpperCase() === "FAILURE"
-              ? "failure"
-              : rollupState
-                ? "pending"
-                : "unknown",
-        ),
-        source: "github-graphql",
-      },
-    });
+          ciStatus: normalizeCiStatus(
+            checks,
+            String(rollupState).toUpperCase() === "SUCCESS"
+              ? "success"
+              : String(rollupState).toUpperCase() === "FAILURE"
+                ? "failure"
+                : rollupState
+                  ? "pending"
+                  : "unknown",
+          ),
+          source: "github-graphql",
+        },
+      });
+      pending.delete(number);
+    }
+    hasNextPage = Boolean(connection?.pageInfo?.hasNextPage);
+    cursor = connection?.pageInfo?.endCursor ?? null;
+    page += 1;
   }
   return snapshots;
 }
@@ -367,6 +495,23 @@ export async function fetchPullFileStats(
     statsOnly: true,
     notice: "当前仅展示文件变更统计；点击“获取代码修改”后统一获取可查看的代码内容。",
   };
+}
+
+export async function fetchPullBehindBy(
+  env: WorkerEnv,
+  owner: string,
+  name: string,
+  baseSha: string,
+  headSha: string,
+) {
+  if (!baseSha || !headSha) return null;
+  const comparison = await optionalGithubFetch<{ behind_by?: number }>(
+    env,
+    `/repos/${owner}/${name}/compare/${baseSha}...${headSha}`,
+  );
+  return comparison?.behind_by === undefined
+    ? null
+    : Number(comparison.behind_by);
 }
 
 export async function fetchPullReviewFacts(
@@ -515,5 +660,3 @@ export async function fetchPullPatches(
   }
   return patches;
 }
-
-

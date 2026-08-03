@@ -1,13 +1,17 @@
 import { computed, ref } from "vue";
 import { api } from "../api/client";
-import { domainOptions } from "../data/community";
-import { communityItemKey } from "../data/workspace";
+import { communityItemKey } from "../domain/community-item";
+import {
+  sortCommunityItems,
+  type CommunitySortMode,
+} from "../domain/community-sorting";
 import type {
   AppView,
   CommunityItem,
   RepositoryId,
   RepositoryMeta,
   TodaySummary,
+  WatchlistMeta,
 } from "../types";
 
 const fallbackRepository: RepositoryMeta = {
@@ -26,12 +30,14 @@ export function useCommunityWorkspace() {
   const selectedDomain = ref("全部领域");
   const searchQuery = ref("");
   const stateFilter = ref("全部状态");
+  const sortMode = ref<CommunitySortMode>("updated");
   const refreshing = ref(false);
   const listLoading = ref(false);
   const todayLoading = ref(false);
   const repositoryData = ref<RepositoryMeta[]>([]);
   const communityData = ref<CommunityItem[]>([]);
   const watchedKeys = ref<Set<string>>(new Set());
+  const watchlistMeta = ref<Record<string, WatchlistMeta>>({});
   const documentCount = ref(0);
   const todaySummaries = ref<Record<string, TodaySummary>>({});
   const impactCount = ref(0);
@@ -79,7 +85,7 @@ export function useCommunityWorkspace() {
         owner: "领域工作空间",
         title: "技术领域地图",
         icon: "stack",
-        badge: "6 个领域",
+        badge: "架构与变化",
       },
       docs: {
         owner: "知识库",
@@ -106,16 +112,8 @@ export function useCommunityWorkspace() {
   const filteredItems = computed(() => {
     const kind = activeView.value === "issues" ? "issue" : "pr";
     const query = searchQuery.value.trim().toLowerCase();
-    const recentSnapshot = communityData.value
-      .filter((item) => item.repo === activeRepo.value && item.kind === kind)
-      .sort(
-        (left, right) =>
-          new Date(right.updatedAt || 0).valueOf() -
-          new Date(left.updatedAt || 0).valueOf(),
-      )
-      .slice(0, 30);
-
-    return recentSnapshot.filter((item) => {
+    const matchingItems = communityData.value.filter((item) => {
+      if (item.repo !== activeRepo.value || item.kind !== kind) return false;
       const matchesDomain =
         selectedDomain.value === "全部领域" ||
         item.domain === selectedDomain.value;
@@ -136,13 +134,24 @@ export function useCommunityWorkspace() {
 
       return matchesDomain && matchesState && matchesQuery;
     });
+    return sortCommunityItems(matchingItems, sortMode.value);
   });
 
   const activeKindLabel = computed(() =>
     activeView.value === "issues" ? "Issue" : "Pull Request",
   );
 
-  const domainFilterOptions = domainOptions.map((domain) => {
+  const domainFilterOptions = computed(() => {
+    const domains = [
+      "全部领域",
+      ...new Set(
+        communityData.value
+          .filter((item) => item.repo === activeRepo.value)
+          .map((item) => item.domain)
+          .filter(Boolean),
+      ),
+    ];
+    return domains.map((domain) => {
     const details: Record<
       string,
       {
@@ -154,25 +163,40 @@ export function useCommunityWorkspace() {
         description: "显示当前仓库的所有技术领域",
         tone: "accent",
       },
-      "Model Runner": {
+      "Engine & Model Runner": {
         description: "模型执行、批处理与图模式",
         tone: "blue",
       },
-      FusedMoE: {
+      "Worker & Graph": { description: "Ascend Worker、Model Runner 与图模式", tone: "blue" },
+      "FusedMoE & Expert Parallelism": {
         description: "专家路由、融合算子与 MoE",
         tone: "purple",
       },
-      Scheduler: { description: "调度、KV Cache 与推测解码" },
+      "FusedMoE & Custom Ops": { description: "Ascend MoE 与 NPU 自定义算子", tone: "purple" },
+      "Scheduler & KV Cache": { description: "上游调度与 KV Cache 生命周期" },
+      "Core Scheduler & KV Cache": { description: "Ascend Core、调度与 KV Cache" },
       Attention: {
         description: "Attention、MLA 与 KV 路径",
         tone: "blue",
       },
       "CI / Infra": { description: "工作流、构建与基础设施" },
-      Distributed: { description: "并行策略、多机与通信" },
+      "Distributed & KV Transfer": { description: "并行通信、KV Connector 与 PD 解耦" },
       Quantization: { description: "量化格式、精度与算子" },
-      "Serving / API": { description: "服务入口、协议与客户端" },
-      "Model Support": { description: "模型实现、加载与适配" },
-      "Platform / Hardware": { description: "设备后端与底层算子" },
+      "Serving & APIs": { description: "服务入口、协议与客户端" },
+      "Model Support & Weight Loading": { description: "模型实现、注册与权重加载" },
+      "Model Loading & Weight Transfer": { description: "Ascend 模型加载与在线权重更新" },
+      "Platform & Hardware": { description: "设备后端与硬件抽象" },
+      "Platform & Patches": { description: "Ascend 平台注册与兼容 patch" },
+      "Compilation & Kernels": { description: "编译、IR 与通用内核" },
+      Compilation: { description: "Ascend 编译与融合优化" },
+      "Speculative Decoding": { description: "MTP、EAGLE 与推测解码" },
+      "Sampling & Structured Output": { description: "采样、约束输出与解析" },
+      Sampling: { description: "Ascend 采样与 logits 处理" },
+      "Rust Frontend": { description: "Rust Server、CLI 与 Engine Client" },
+      EPLB: { description: "专家放置与动态负载均衡" },
+      "KV Offload": { description: "KV Cache 外部介质卸载" },
+      "Device & Memory": { description: "NPU 设备、内存与资源生命周期" },
+      XLite: { description: "XLite 独立执行后端" },
       Documentation: { description: "文档、示例与开发指引" },
       Tests: { description: "单元测试、集成与回归验证" },
       Other: {
@@ -187,6 +211,7 @@ export function useCommunityWorkspace() {
       description: details[domain]?.description,
       tone: details[domain]?.tone ?? "neutral",
     };
+    });
   });
 
   const stateFilterOptions = computed(() => [
@@ -232,13 +257,28 @@ export function useCommunityWorkspace() {
     },
   ]);
 
+  const sortOptions = [
+    {
+      value: "updated",
+      label: "最近更新",
+      description: "按 GitHub 更新时间排序，最新变化在上",
+      tone: "accent" as const,
+    },
+    {
+      value: "number",
+      label: "编号倒序",
+      description: "按 PR 或 Issue 编号从大到小排序",
+      tone: "blue" as const,
+    },
+  ];
+
   async function loadApplicationData() {
     listLoading.value = true;
     try {
       const [repos, items, watchItems, documents, insights, impacts] =
         await Promise.all([
           api.repositories(),
-          api.community({ limit: 200 }),
+          api.communityAll(),
           api.watchlist(),
           api.documents(),
           api.analyses("insight", "all"),
@@ -248,6 +288,9 @@ export function useCommunityWorkspace() {
       communityData.value = items;
       watchedKeys.value = new Set(
         watchItems.map(({ item }) => communityItemKey(item)),
+      );
+      watchlistMeta.value = Object.fromEntries(
+        watchItems.map(({ item, watch }) => [communityItemKey(item), watch]),
       );
       documentCount.value = documents.length;
       insightCount.value = insights.length;
@@ -266,10 +309,10 @@ export function useCommunityWorkspace() {
     todayLoading.value = true;
     listLoading.value = ["pulls", "issues"].includes(activeView.value);
     try {
-      const syncResult = await api.syncRepository(activeRepo.value);
+      const syncResult = await api.refreshRepositoryTask(activeRepo.value, "facts");
       const [repos, items, today, impacts, insights] = await Promise.all([
         api.repositories(),
-        api.community({ limit: 200 }),
+        api.communityAll(),
         api.today(activeRepo.value),
         api.impacts(),
         api.analyses("insight", "all"),
@@ -282,9 +325,12 @@ export function useCommunityWorkspace() {
       };
       impactCount.value = impacts.length;
       insightCount.value = insights.length;
+      const refreshedRepository = repos.find(
+        (repo) => repo.id === activeRepo.value,
+      );
       return (
-        syncResult.run.warning ||
-        `同步完成：${syncResult.run.capturedEvents} 条状态事件，${syncResult.run.analyzed} 条 AI 摘要`
+        `社区事实刷新完成：本次更新 ${Number(syncResult.run.pulls ?? 0)} 个 PR、${Number(syncResult.run.issues ?? 0)} 个 Issue；` +
+        `当前列表共 ${refreshedRepository?.openPulls ?? 0} 个 PR、${refreshedRepository?.openIssues ?? 0} 个 Issue；未调用 AI 或重新分类`
       );
     } finally {
       refreshing.value = false;
@@ -300,9 +346,19 @@ export function useCommunityWorkspace() {
     if (removing) {
       await api.removeWatch(key);
       next.delete(key);
+      const nextMeta = { ...watchlistMeta.value };
+      delete nextMeta[key];
+      watchlistMeta.value = nextMeta;
     } else {
-      await api.addWatch(key, { reason: "持续关注", priority: "P2" });
+      const meta: WatchlistMeta = {
+        reason: "持续关注",
+        note: "尚未添加个人备注。",
+        priority: "P2",
+        nextCheck: "明天",
+      };
+      await api.addWatch(key, meta);
       next.add(key);
+      watchlistMeta.value = { ...watchlistMeta.value, [key]: meta };
     }
     watchedKeys.value = next;
     return removing;
@@ -317,6 +373,7 @@ export function useCommunityWorkspace() {
   function clearUserData() {
     communityData.value = [];
     watchedKeys.value = new Set();
+    watchlistMeta.value = {};
   }
 
   return {
@@ -339,12 +396,15 @@ export function useCommunityWorkspace() {
     repositoryData,
     searchQuery,
     selectedDomain,
+    sortMode,
+    sortOptions,
     stateFilter,
     stateFilterOptions,
     todayLoading,
     todaySummaries,
     toggleWatch,
     watchedKeys,
+    watchlistMeta,
     watchlistItems,
     workspaceHeader,
   };

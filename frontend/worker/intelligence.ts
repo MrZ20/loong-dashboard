@@ -1,4 +1,7 @@
-import { DOMAIN_ARCHITECTURES } from "./seed";
+import {
+  architectureMatchesDomain,
+  findArchitectureForDomain,
+} from "./domain/architecture-catalog";
 import {
   first,
   parseJson,
@@ -200,10 +203,13 @@ export async function refreshCrossRepoImpacts(env: WorkerEnv) {
   );
   const now = new Date().toISOString();
   for (const source of sources) {
-    const architecture = DOMAIN_ARCHITECTURES[source.domain];
-    if (!architecture) continue;
+    const architectureEntry = findArchitectureForDomain(source.repo_id, source.domain);
+    if (!architectureEntry) continue;
+    const { architecture } = architectureEntry;
+    if (!architecture.ascendPaths.length) continue;
     const related = targets
-      .filter((target) => target.domain === source.domain)
+      .filter((target) =>
+        architectureMatchesDomain(architecture, target.repo_id, target.domain))
       .map((target) => ({
         target,
         score: similarity(source.title, target.title),

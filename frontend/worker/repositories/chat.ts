@@ -21,19 +21,30 @@ export function createThreadRow(
     userId: string;
     title: string;
     context: unknown;
+    mode?: "normal" | "repository";
+    repoScope?: string;
+    targetRef?: string;
+    providerId?: string;
+    modelId?: string;
     createdAt: string;
   },
 ) {
   return run(
     env,
     `INSERT INTO chat_threads(
-      id, user_id, title, context_json, created_at, updated_at
-    ) VALUES(?, ?, ?, ?, ?, ?)`,
+      id, user_id, title, context_json, mode, repo_scope, target_ref,
+      provider_id, model_id, created_at, updated_at
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.id,
       input.userId,
       input.title,
       JSON.stringify(input.context),
+      input.mode || "normal",
+      input.repoScope || "",
+      input.targetRef || "",
+      input.providerId || "",
+      input.modelId || "",
       input.createdAt,
       input.createdAt,
     ],

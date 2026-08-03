@@ -1,3 +1,4 @@
+import { generateTechnicalDocument } from "../ai";
 import { requireUser } from "../auth";
 import {
   mapAnalysis,
@@ -27,6 +28,8 @@ import {
   saveWatchlistItem,
   updateDocumentRow,
 } from "../repositories/content";
+import { resolveAITask } from "../services/ai-task-settings";
+import { enqueueManagedAITask } from "../services/local-analysis";
 
 export async function handleWatchlist(request: Request, env: WorkerEnv, itemId?: string) {
   const user = await requireUser(request, env);
@@ -91,6 +94,74 @@ export async function handleAnalyses(request: Request, env: WorkerEnv, id?: stri
   const scope = url.searchParams.get("scope");
   const rows = await listAnalysisRows(env, type, scope);
   return json({ analyses: rows.map(mapAnalysis) });
+}
+
+export async function generateDocumentDraft(request: Request, env: WorkerEnv) {
+  const user = await requireUser(request, env);
+  requireMethod(request, ["POST"]);
+  const body = await readJson<Record<string, unknown>>(request);
+  const title = cleanText(body.title, 200);
+  const category = cleanText(body.category, 80);
+  const contentMd = cleanText(body.contentMd, 200_000);
+  if (!title || !category || !contentMd) {
+    throw new HttpError(400, "请先填写标题、技术分类和 Markdown 草稿");
+  }
+  const summary = cleanText(body.summary, 1_000);
+  const tags = Array.isArray(body.tags)
+    ? body.tags.map((tag) => cleanText(tag, 80)).filter(Boolean).slice(0, 20)
+    : [];
+  const sourceRefs = Array.isArray(body.sourceRefs)
+    ? body.sourceRefs.map((source) => cleanText(source, 500)).filter(Boolean).slice(0, 50)
+    : [];
+  const task = await resolveAITask(env, user.id, "technical_document_generation");
+  if (task.executionMode === "opencode") {
+    const sourceText = sourceRefs.join("\n").toLowerCase();
+    const repoScope = sourceText.includes("vllm-ascend")
+      ? "vllm-ascend"
+      : sourceText.includes("vllm") ? "vllm" : "all";
+    const job = await enqueueManagedAITask(env, {
+      userId: user.id,
+      taskKey: "technical_document_generation",
+      purpose: "analysis_document",
+      subjectKind: "technical_document",
+      subjectKey: `technical-document:${category}:${Date.now()}`,
+      repoScope,
+      request: {
+        title,
+        category,
+        summary,
+        contentMd,
+        tags,
+        sourceRefs,
+        document: {
+          type: "technical_document_draft",
+          scope: category,
+          title: `${title} · AI 草稿`,
+          sourceRefs,
+        },
+      },
+    });
+    return json({ job }, { status: 202 });
+  }
+  const result = await generateTechnicalDocument(env, {
+    userId: user.id,
+    title,
+    category,
+    summary,
+    contentMd,
+    tags,
+    sourceRefs,
+  });
+  const generatedSummary = result.content
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith("#"))
+    ?.slice(0, 500) || summary;
+  return json({
+    draft: { contentMd: result.content, summary: generatedSummary },
+    provider: result.provider,
+    providerName: result.providerName,
+  });
 }
 
 export async function handleDocuments(request: Request, env: WorkerEnv, id?: string) {
@@ -164,4 +235,3 @@ export async function handleDocuments(request: Request, env: WorkerEnv, id?: str
   });
   return json({ document: mapTechnicalDocument(updated!) });
 }
-

@@ -793,6 +793,12 @@
   background: var(--surface-muted);
 }
 
+.domain-code-map--architecture {
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--accent-soft) 45%, transparent), transparent 42%),
+    var(--surface-muted);
+}
+
 .domain-code-map__title {
   display: flex;
   align-items: flex-end;
@@ -809,6 +815,169 @@
 .domain-code-map__title > span {
   color: var(--text-tertiary);
   font-size: 9px;
+}
+
+.domain-code-map__title .domain-baseline-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--green);
+}
+
+.domain-architecture-intro {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  align-items: start;
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 12px 13px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.domain-architecture-intro > span {
+  color: var(--accent-dark);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.05em;
+}
+
+.domain-architecture-intro > p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  line-height: 1.65;
+}
+
+.domain-taxonomy-map {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  align-items: start;
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 12px 13px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.domain-taxonomy-map > span {
+  color: var(--accent-dark);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.05em;
+}
+
+.domain-taxonomy-map > div {
+  display: grid;
+  gap: 9px;
+}
+
+.domain-taxonomy-map section {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.domain-taxonomy-map strong {
+  min-width: 82px;
+  color: var(--text-secondary);
+  font-size: 9px;
+}
+
+.domain-taxonomy-map code {
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-size: 8.5px;
+}
+
+.domain-taxonomy-map small {
+  color: var(--text-tertiary);
+  font-size: 9px;
+}
+
+.domain-execution-map {
+  margin-bottom: 16px;
+  padding: 13px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent-soft) 30%, var(--surface));
+}
+
+.domain-execution-map > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.domain-execution-map > header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.domain-execution-map > header strong {
+  font-size: 10.5px;
+}
+
+.domain-execution-map > header span,
+.domain-execution-map > header code {
+  color: var(--text-tertiary);
+  font-size: 8.5px;
+}
+
+.domain-execution-map > header code {
+  max-width: 55%;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.domain-execution-map__flow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.domain-execution-map__flow article {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  min-height: 58px;
+  align-content: center;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  text-align: center;
+}
+
+.domain-execution-map__flow article > span {
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 8px;
+  font-weight: 720;
+}
+
+.domain-execution-map__flow article > strong {
+  overflow: hidden;
+  font-size: 9.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+}
+
+.domain-execution-map__arrow {
+  flex: 0 0 auto;
+  justify-self: center;
+  color: var(--accent);
 }
 
 .domain-code-map__flow {
@@ -831,6 +1000,14 @@
   align-items: center;
   gap: 8px;
   margin-bottom: 11px;
+}
+
+.domain-stage__responsibility {
+  min-height: 42px;
+  margin: -2px 0 9px;
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 1.55;
 }
 
 .domain-stage > header > span {
@@ -1512,5 +1689,3 @@
   font-size: 10px;
   line-height: 1.5;
 }
-
-

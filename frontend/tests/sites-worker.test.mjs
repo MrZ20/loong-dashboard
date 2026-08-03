@@ -121,4 +121,28 @@ test("emits the files required by Sites packaging", async () => {
       import.meta.url,
     ),
   );
+  await access(
+    new URL(
+      "../dist/.openai/drizzle/0010_domain_snapshot_prompt_metadata.sql",
+      import.meta.url,
+    ),
+  );
+  await access(
+    new URL(
+      "../dist/.openai/drizzle/0011_repository_classification_taxonomies.sql",
+      import.meta.url,
+    ),
+  );
+  await access(
+    new URL(
+      "../dist/.openai/drizzle/0012_rollout_repository_taxonomies.sql",
+      import.meta.url,
+    ),
+  );
+  await access(
+    new URL(
+      "../dist/.openai/drizzle/0013_remove_legacy_sync_runs.sql",
+      import.meta.url,
+    ),
+  );
 });

@@ -1,7 +1,8 @@
-import type { WorkerEnv } from "./db";
+import { initializeDatabase, type WorkerEnv } from "./db";
 import { handleError, HttpError } from "./http";
 import { handleApi } from "./routes/api";
 import { isKnownApiPath } from "./routes/manifest";
+import { runDueRefreshTasks } from "./services/refresh-management";
 
 async function fetchHandler(request: Request, env: WorkerEnv) {
   const url = new URL(request.url);
@@ -34,4 +35,9 @@ async function fetchHandler(request: Request, env: WorkerEnv) {
 
 export default {
   fetch: fetchHandler,
+  async scheduled(_controller: unknown, env: WorkerEnv, context: { waitUntil(promise: Promise<unknown>): void }) {
+    context.waitUntil(
+      initializeDatabase(env).then(() => runDueRefreshTasks(env)),
+    );
+  },
 };

@@ -1,9 +1,9 @@
 import {
-  DOMAIN_ARCHITECTURES,
   SEED_ANALYSES,
   SEED_COMMUNITY_ITEMS,
   SEED_TECHNICAL_DOCUMENTS,
 } from "./seed";
+import { DOMAIN_ARCHITECTURES } from "./domain/architecture-catalog";
 
 const databaseInitializations = new WeakMap<object, Promise<void>>();
 const REQUIRED_TABLES = [
@@ -11,6 +11,13 @@ const REQUIRED_TABLES = [
   "users",
   "user_profiles",
   "ai_providers",
+  "github_credentials",
+  "ai_prompt_templates",
+  "ai_prompt_preferences",
+  "ai_task_bindings",
+  "refresh_task_configs",
+  "refresh_task_runs",
+  "community_summary_jobs",
   "repositories",
   "community_items",
   "community_events",
@@ -21,7 +28,12 @@ const REQUIRED_TABLES = [
   "technical_documents",
   "chat_threads",
   "chat_messages",
-  "sync_runs",
+  "local_runner_settings",
+  "local_runners",
+  "local_analysis_jobs",
+  "local_analysis_events",
+  "opencode_session_bindings",
+  "classification_taxonomy_overrides",
 ] as const;
 
 export interface WorkerEnv {
@@ -37,6 +49,7 @@ export interface WorkerEnv {
   ALLOW_DEV_AUTH?: string;
   LOCAL_ADMIN_PASSWORD?: string;
   SEED_DEMO_DATA?: string;
+  LOCAL_RUNNER_TOKEN?: string;
 }
 
 export function requireDb(env: WorkerEnv) {
@@ -424,6 +437,39 @@ export function mapCommunityItem(
     lastEventType: row.last_event_type ?? null,
     lastEventAt: row.last_event_at ?? null,
     fetchedAt: row.fetched_at,
+    factsRefreshedAt: row.facts_refreshed_at ?? row.fetched_at,
+    labels: parseJson(row.labels_json, []),
+    baseSha: row.base_sha ?? null,
+    headSha: row.head_sha ?? null,
+    mergeCommitSha: row.merge_commit_sha ?? null,
+    summaryStatus: row.summary_status || (row.summary_source === "ai" ? "ready" : "missing"),
+    summaryVersion: {
+      headSha: row.summary_head_sha ?? null,
+      bodyHash: row.summary_body_hash || "",
+      filesHash: row.summary_files_hash || "",
+      promptType: row.summary_prompt_type || "",
+      promptVersion: row.summary_prompt_version || "",
+      model: row.summary_model || "",
+      provider: row.summary_provider || "",
+      source: row.summary_source || "excerpt",
+      evidenceCompleteness: row.summary_evidence_completeness || "insufficient",
+      structured: parseJson(row.summary_structured_json, {}),
+      generatedAt: row.summary_generated_at ?? row.summary_updated_at ?? null,
+      evidence: parseJson(row.summary_evidence_json, []),
+      error: row.summary_error ?? null,
+    },
+    classificationStatus: row.classification_status || "missing",
+    classificationVersion: {
+      headSha: row.classification_head_sha ?? null,
+      bodyHash: row.classification_body_hash || "",
+      filesHash: row.classification_files_hash || "",
+      generatedAt: row.classification_generated_at ?? null,
+      locked: Boolean(row.classification_locked),
+      details: parseJson(row.classification_details_json, {}),
+      error: row.classification_error ?? null,
+    },
+    deepAnalysisStatus: row.deep_analysis_status || "missing",
+    deepAnalysisHeadSha: row.deep_analysis_head_sha ?? null,
     domainAssessment,
     reviewSignal,
     reviewSignalUpdatedAt: row.review_signal_updated_at ?? null,
@@ -440,9 +486,27 @@ export function mapAnalysis(row: Record<string, any>) {
     summaryMd: row.summary_md,
     contentMd: row.content_md,
     prompt: row.prompt,
+    promptTemplateId: row.prompt_template_id ?? null,
+    promptTemplateName: row.prompt_template_name || "",
+    promptRevision: Number(row.prompt_revision ?? 1),
     model: row.model,
+    baseSha: row.base_sha ?? null,
+    headSha: row.head_sha ?? null,
+    bodyHash: row.body_hash || "",
+    filesHash: row.files_hash || "",
+    promptType: row.prompt_type || "",
+    promptVersion: row.prompt_version || "",
+    runner: row.runner || "api",
+    provider: row.provider || "",
+    analysisSource: row.analysis_source || "unknown",
+    evidenceCompleteness: row.evidence_completeness || "insufficient",
+    versionStatus: row.version_status || "current",
     status: row.status,
     sourceRefs: parseJson(row.source_refs_json, []),
+    opencodeSessionId: row.opencode_session_id ?? null,
+    runnerJobId: row.runner_job_id ?? null,
+    codeReferences: parseJson(row.code_references_json, []),
+    localEvidence: Boolean(row.local_evidence),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

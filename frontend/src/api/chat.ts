@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatThread } from "../types";
+import type { ChatMessage, ChatThread, LocalAnalysisJob } from "../types";
 import { apiFetch } from "./core";
 
 export const chatApi = {
@@ -29,16 +29,26 @@ export const chatApi = {
 
   sendMessage: (
     threadId: string,
-    input: { content: string; pageContext: string; selection: string },
+    input: {
+      content: string;
+      pageContext: string;
+      selection: string;
+      mode?: "normal" | "repository";
+      repoScope?: string;
+      targetRef?: string;
+      providerId?: string;
+      modelId?: string;
+    },
   ) =>
     apiFetch<{
       userMessage: ChatMessage;
-      assistantMessage: ChatMessage;
-      provider: string;
+      assistantMessage?: ChatMessage;
+      provider?: string;
+      job?: LocalAnalysisJob;
+      effectiveMode?: "normal" | "repository";
     }>(`/api/chat/threads/${encodeURIComponent(threadId)}/messages`, {
       method: "POST",
       body: JSON.stringify(input),
     }),
 
 };
-

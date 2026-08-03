@@ -8,12 +8,10 @@ import {
   initializeDatabase,
   type WorkerEnv,
 } from "../db";
-import { createDailyDomainSnapshot, listDomains } from "../domains";
-import { syncRepository } from "../github";
+import { createDailyDomainSnapshot, listDomains } from "../services/domain-maps";
 import {
   getTodaySummary,
   listCrossRepoImpacts,
-  refreshCrossRepoImpacts,
   updateCrossRepoImpactStatus,
 } from "../intelligence";
 import {
@@ -25,8 +23,15 @@ import {
 } from "../http";
 import { handleSettings } from "../settings";
 import { listEnabledRepositories } from "../repositories/repositories";
+import {
+  listRefreshSettings,
+  runRefreshTask,
+} from "../services/refresh-management";
+import { isRefreshTaskType } from "../domain/refresh-policy";
 import { generateAnalysis } from "./analysis";
 import { handleChat } from "./chat";
+import { handleLocalAnalysis } from "./local-analysis";
+import { handleLocalRunner } from "./local-runner";
 import {
   analyzeItem,
   getCommunityDiffFiles,
@@ -34,6 +39,7 @@ import {
   listCommunity,
 } from "./community";
 import {
+  generateDocumentDraft,
   handleAnalyses,
   handleDocuments,
   handleWatchlist,
@@ -66,6 +72,10 @@ export async function handleApi(request: Request, env: WorkerEnv) {
   }
 
   await initializeDatabase(env);
+
+  if (path.startsWith("/api/local-runner/")) {
+    return handleLocalRunner(request, env, path);
+  }
 
   if (path === "/api/auth/me") {
     requireMethod(request, ["GET"]);
@@ -103,18 +113,42 @@ export async function handleApi(request: Request, env: WorkerEnv) {
     );
   }
 
-  const repositorySync = pathMatch(path, /^\/api\/repositories\/([^/]+)\/sync$/);
-  if (repositorySync) {
+  const repositoryRefresh = pathMatch(
+    path,
+    /^\/api\/repositories\/([^/]+)\/refresh\/([^/]+)$/,
+  );
+  if (repositoryRefresh) {
     requireMethod(request, ["POST"]);
     const user = await requireUser(request, env);
-    const syncRun = await syncRepository(env, repositorySync[0], user.id);
-    await refreshCrossRepoImpacts(env);
-    return json({ run: syncRun });
+    const taskType = repositoryRefresh[1];
+    if (!isRefreshTaskType(taskType)) throw new HttpError(400, "刷新任务类型不正确");
+    if (taskType === "deep_analysis") {
+      throw new HttpError(400, "深度分析只能从具体 PR 或 Issue 启动");
+    }
+    const body = await readJson<{ itemId?: string }>(request);
+    return json({
+      run: await runRefreshTask(env, {
+        userId: user.id,
+        repoId: repositoryRefresh[0],
+        taskType,
+        triggerType: "manual",
+        itemId: typeof body.itemId === "string" ? body.itemId : null,
+      }),
+    });
   }
   if (path === "/api/repositories") {
     requireMethod(request, ["GET"]);
-    await requireUser(request, env);
-    return json({ repositories: await listEnabledRepositories(env) });
+    const user = await requireUser(request, env);
+    const [repositories, tasks] = await Promise.all([
+      listEnabledRepositories(env),
+      listRefreshSettings(env, user.id),
+    ]);
+    return json({
+      repositories: repositories.map((repository) => ({
+        ...repository,
+        refreshTasks: tasks.filter((task) => task.repoId === repository.id),
+      })),
+    });
   }
 
   if (path === "/api/community") {
@@ -155,6 +189,7 @@ export async function handleApi(request: Request, env: WorkerEnv) {
     requireMethod(request, ["GET"]);
     await requireUser(request, env);
     return getCommunityDiffFiles(
+      request,
       env,
       communityDiffFiles[0],
       communityDiffFiles[1],
@@ -213,12 +248,13 @@ export async function handleApi(request: Request, env: WorkerEnv) {
   );
   if (domainSnapshot) {
     requireMethod(request, ["POST"]);
-    await requireUser(request, env);
-    const snapshot = await createDailyDomainSnapshot(env, domainSnapshot[0]);
-    if (!snapshot) throw new HttpError(404, "技术领域不存在");
-    return json({ snapshot }, { status: 201 });
+    const user = await requireUser(request, env);
+    const result = await createDailyDomainSnapshot(env, user.id, domainSnapshot[0]);
+    if (!result) throw new HttpError(404, "技术领域不存在");
+    return json(result, { status: result.job ? 202 : 201 });
   }
 
+  if (path === "/api/documents/generate") return generateDocumentDraft(request, env);
   if (path === "/api/documents") return handleDocuments(request, env);
   const documentDetail = pathMatch(path, /^\/api\/documents\/([^/]+)$/);
   if (documentDetail) return handleDocuments(request, env, documentDetail[0]);
@@ -226,8 +262,10 @@ export async function handleApi(request: Request, env: WorkerEnv) {
   if (path.startsWith("/api/settings/")) {
     return handleSettings(request, env, path);
   }
+  if (path.startsWith("/api/local-analysis/")) {
+    return handleLocalAnalysis(request, env, path);
+  }
   if (path.startsWith("/api/chat/")) return handleChat(request, env, path);
 
   throw new HttpError(404, "API 接口不存在");
 }
-

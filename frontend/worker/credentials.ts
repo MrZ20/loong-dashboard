@@ -16,7 +16,7 @@ function base64UrlToBytes(value: string) {
 async function credentialKey(env: WorkerEnv) {
   const secret = env.CREDENTIALS_ENCRYPTION_KEY || env.SESSION_SECRET;
   if (!secret) {
-    throw new HttpError(500, "AI Token 加密密钥未配置");
+    throw new HttpError(500, "凭据加密密钥未配置");
   }
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -43,7 +43,7 @@ export async function decryptCredential(env: WorkerEnv, value: string) {
   if (!value) return "";
   const [ivValue, encryptedValue] = value.split(".");
   if (!ivValue || !encryptedValue) {
-    throw new HttpError(500, "AI Token 密文格式不正确");
+    throw new HttpError(500, "凭据密文格式不正确");
   }
   try {
     const decrypted = await crypto.subtle.decrypt(
@@ -53,6 +53,6 @@ export async function decryptCredential(env: WorkerEnv, value: string) {
     );
     return new TextDecoder().decode(decrypted);
   } catch {
-    throw new HttpError(500, "AI Token 无法解密，请在设置中重新保存");
+    throw new HttpError(500, "凭据无法解密，请在设置中重新保存");
   }
 }

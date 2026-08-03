@@ -13,6 +13,7 @@ export type CommunityListQuery = {
   search?: string | null;
   since?: string | null;
   limit: number;
+  offset: number;
 };
 
 const eventProjection = `
@@ -67,9 +68,9 @@ export async function listCommunityRows(
     `SELECT community_items.*, ${eventProjection}
      FROM community_items
      ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
-     ORDER BY important DESC, updated_at DESC
-     LIMIT ?`,
-    [...bindings, input.limit],
+     ORDER BY important DESC, updated_at DESC, number DESC, id DESC
+     LIMIT ? OFFSET ?`,
+    [...bindings, input.limit, input.offset],
   );
 }
 
@@ -85,6 +86,22 @@ export function findCommunityRow(
      FROM community_items
      WHERE repo_id = ? AND kind = ? AND number = ?`,
     [repo, kind, number],
+  );
+}
+
+export function findPullWithRepository(
+  env: WorkerEnv,
+  repoId: string,
+  number: number,
+) {
+  return first<Record<string, any>>(
+    env,
+    `SELECT community_items.*, repositories.owner, repositories.name
+     FROM community_items
+     JOIN repositories ON repositories.id = community_items.repo_id
+     WHERE community_items.repo_id = ? AND community_items.kind = 'pr'
+       AND community_items.number = ?`,
+    [repoId, number],
   );
 }
 
@@ -112,7 +129,22 @@ export async function createCommunityAnalysis(
     summaryMd: string;
     contentMd: string;
     prompt: string;
+    promptTemplateId: string;
+    promptTemplateName: string;
+    promptRevision: number;
     model: string;
+    baseSha: string | null;
+    headSha: string | null;
+    bodyHash: string;
+    filesHash: string;
+    promptType: string;
+    promptVersion: string;
+    runner: string;
+    provider: string;
+    analysisSource: "ai";
+    evidenceCompleteness: string;
+    versionStatus: "current" | "outdated";
+    sourceRefs: string[];
     userId: string;
     createdAt: string;
   },
@@ -120,9 +152,12 @@ export async function createCommunityAnalysis(
   await run(
     env,
     `INSERT INTO analysis_documents (
-      id, type, scope, title, summary_md, content_md, prompt, model, status,
+      id, type, scope, title, summary_md, content_md, prompt,
+      prompt_template_id, prompt_template_name, prompt_revision, model, status,
+      base_sha, head_sha, body_hash, files_hash, prompt_type, prompt_version,
+      runner, provider, analysis_source, evidence_completeness, version_status,
       created_by, source_refs_json, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.id,
       input.kind,
@@ -131,9 +166,23 @@ export async function createCommunityAnalysis(
       input.summaryMd,
       input.contentMd,
       input.prompt,
+      input.promptTemplateId,
+      input.promptTemplateName,
+      input.promptRevision,
       input.model,
+      input.baseSha,
+      input.headSha,
+      input.bodyHash,
+      input.filesHash,
+      input.promptType,
+      input.promptVersion,
+      input.runner,
+      input.provider,
+      input.analysisSource,
+      input.evidenceCompleteness,
+      input.versionStatus,
       input.userId,
-      JSON.stringify([input.scope]),
+      JSON.stringify(input.sourceRefs),
       input.createdAt,
       input.createdAt,
     ],
@@ -142,5 +191,60 @@ export async function createCommunityAnalysis(
     env,
     "SELECT * FROM analysis_documents WHERE id = ?",
     [input.id],
+  );
+}
+
+export function updateCommunityDeepAnalysisStatus(
+  env: WorkerEnv,
+  itemId: string,
+  status: "running" | "ready" | "outdated" | "failed",
+  headSha?: string | null,
+) {
+  return run(
+    env,
+    `UPDATE community_items SET deep_analysis_status = ?,
+      deep_analysis_head_sha = CASE WHEN ? = 'ready' THEN ? ELSE deep_analysis_head_sha END
+     WHERE id = ?`,
+    [status, status, headSha ?? null, itemId],
+  );
+}
+
+export function updateCommunityDeepAnalysisStatusForVersion(
+  env: WorkerEnv,
+  input: {
+    itemId: string;
+    status: "ready" | "outdated" | "failed";
+    headSha: string | null;
+    bodyHash: string;
+    filesHash: string;
+  },
+) {
+  return run(
+    env,
+    `UPDATE community_items SET deep_analysis_status = ?,
+      deep_analysis_head_sha = CASE WHEN ? = 'ready' THEN ? ELSE deep_analysis_head_sha END
+     WHERE id = ? AND body_hash = ? AND files_hash = ?
+       AND COALESCE(head_sha, '') = COALESCE(?, '')`,
+    [
+      input.status,
+      input.status,
+      input.headSha,
+      input.itemId,
+      input.bodyHash,
+      input.filesHash,
+      input.headSha,
+    ],
+  );
+}
+
+export function markCommunityDeepAnalysisOutdatedIfRunning(
+  env: WorkerEnv,
+  itemId: string,
+) {
+  return run(
+    env,
+    `UPDATE community_items SET deep_analysis_status = 'outdated'
+     WHERE id = ? AND deep_analysis_status = 'running'`,
+    [itemId],
   );
 }

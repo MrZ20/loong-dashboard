@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { CommunityItem } from "../types";
-import { communityItemKey } from "../data/workspace";
+import { communityItemKey } from "../domain/community-item";
 import CommunityRow from "./CommunityRow.vue";
 import Octicon from "./Octicon.vue";
 

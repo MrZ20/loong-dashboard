@@ -2,10 +2,29 @@ import type {
   AnalysisDocument,
   CrossRepoImpact,
   RepositoryMeta,
+  RefreshTaskState,
+  RefreshTaskType,
+  LocalAnalysisJob,
   TodaySummary,
+  WatchlistMeta,
 } from "../types";
 import { apiFetch } from "./core";
 import { mapCommunityItem } from "./mappers";
+
+const COMMUNITY_PAGE_SIZE = 200;
+
+async function fetchCommunityPage(
+  params: Record<string, string | number | undefined> = {},
+) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== "") search.set(key, String(value));
+  }
+  const result = await apiFetch<{ items: any[]; total: number }>(
+    `/api/community${search.size ? `?${search}` : ""}`,
+  );
+  return result.items.map(mapCommunityItem);
+}
 
 export const communityApi = {
   repositories: async () => {
@@ -26,23 +45,23 @@ export const communityApi = {
         openIssues: Number(repo.openIssues ?? 0),
         lastSyncedAt: repo.lastSyncedAt,
         syncStatus: repo.syncStatus,
+        refreshTasks: (repo.refreshTasks ?? []) as RefreshTaskState[],
       }),
     );
   },
 
-  syncRepository: (repo: string) =>
-    apiFetch<{
-      run: {
-        pulls: number;
-        issues: number;
-        capturedEvents: number;
-        analyzed: number;
-        warning?: string;
-        finishedAt: string;
-      };
-    }>(`/api/repositories/${encodeURIComponent(repo)}/sync`, {
-      method: "POST",
-    }),
+  refreshRepositoryTask: (
+    repo: string,
+    taskType: Exclude<RefreshTaskType, "deep_analysis">,
+    itemId?: string,
+  ) =>
+    apiFetch<{ run: Record<string, any> }>(
+      `/api/repositories/${encodeURIComponent(repo)}/refresh/${taskType}`,
+      {
+        method: "POST",
+        body: JSON.stringify(itemId ? { itemId } : {}),
+      },
+    ),
 
   today: async (repo: string) => {
     const result = await apiFetch<{ summary: TodaySummary }>(
@@ -62,15 +81,21 @@ export const communityApi = {
       body: JSON.stringify({ status }),
     }),
 
-  community: async (params: Record<string, string | number | undefined> = {}) => {
-    const search = new URLSearchParams();
-    for (const [key, value] of Object.entries(params)) {
-      if (value !== undefined && value !== "") search.set(key, String(value));
+  community: fetchCommunityPage,
+
+  communityAll: async (
+    params: Record<string, string | number | undefined> = {},
+  ) => {
+    const items = [];
+    for (let offset = 0; ; offset += COMMUNITY_PAGE_SIZE) {
+      const page = await fetchCommunityPage({
+        ...params,
+        limit: COMMUNITY_PAGE_SIZE,
+        offset,
+      });
+      items.push(...page);
+      if (page.length < COMMUNITY_PAGE_SIZE) return items;
     }
-    const result = await apiFetch<{ items: any[]; total: number }>(
-      `/api/community${search.size ? `?${search}` : ""}`,
-    );
-    return result.items.map(mapCommunityItem);
   },
 
   communityItem: async (
@@ -109,11 +134,14 @@ export const communityApi = {
     repo: string,
     kind: "pr" | "issue",
     number: number,
-    prompt = "",
+    requirement = "",
   ) =>
-    apiFetch<{ analysis: AnalysisDocument; provider: string }>(
+    apiFetch<{ job?: LocalAnalysisJob | null; analysis?: AnalysisDocument | null }>(
       `/api/community/${encodeURIComponent(repo)}/${kind}/${number}/analyze`,
-      { method: "POST", body: JSON.stringify({ prompt }) },
+      {
+        method: "POST",
+        body: JSON.stringify({ requirement }),
+      },
     ),
 
   watchlist: async () => {
@@ -124,7 +152,7 @@ export const communityApi = {
     }));
   },
 
-  addWatch: (itemId: string, meta: Record<string, unknown> = {}) =>
+  addWatch: (itemId: string, meta: Partial<WatchlistMeta> = {}) =>
     apiFetch<{ ok: boolean }>(`/api/watchlist/${encodeURIComponent(itemId)}`, {
       method: "POST",
       body: JSON.stringify(meta),
@@ -136,4 +164,3 @@ export const communityApi = {
     }),
 
 };
-

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { RepositoryMeta, ThemeMode } from "../types";
+import type { RefreshTaskType, RepositoryMeta, ThemeMode } from "../types";
 import Octicon from "./Octicon.vue";
 
 const props = defineProps<{
@@ -26,6 +26,38 @@ const syncedLabel = computed(() => {
   if (elapsed < 86_400_000) return `${Math.round(elapsed / 3_600_000)} 小时前同步`;
   return `${Math.round(elapsed / 86_400_000)} 天前同步`;
 });
+
+function relativeRefreshTime(value: string | null | undefined) {
+  if (!value) return "尚未运行";
+  const elapsed = Math.max(0, Date.now() - new Date(value).valueOf());
+  if (elapsed < 60_000) return "刚刚";
+  if (elapsed < 3_600_000) return `${Math.round(elapsed / 60_000)} 分钟前`;
+  if (elapsed < 86_400_000) return `${Math.round(elapsed / 3_600_000)} 小时前`;
+  return `${Math.round(elapsed / 86_400_000)} 天前`;
+}
+
+function task(type: RefreshTaskType) {
+  return props.repo.refreshTasks?.find((candidate) => candidate.taskType === type);
+}
+
+const refreshBriefs = computed(() => [
+  {
+    type: "facts",
+    label: "社区事实",
+    value: `${relativeRefreshTime(task("facts")?.lastSuccessfulAt)}更新`,
+  },
+  {
+    type: "summary",
+    label: "摘要分析",
+    value: `${relativeRefreshTime(task("summary")?.lastSuccessfulAt)}运行，${task("summary")?.pendingCount ?? 0} 条待处理`,
+  },
+  {
+    type: "classification",
+    label: "分类标签",
+    value: task("classification")?.refreshRule === "first_only" ? "仅首次" : "按配置",
+  },
+  { type: "deep_analysis", label: "深度分析", value: "仅手动" },
+]);
 
 const emit = defineEmits<{
   refresh: [];
@@ -78,9 +110,14 @@ const emit = defineEmits<{
         </span>
         <button class="button button--secondary" :disabled="refreshing" @click="emit('refresh')">
           <Octicon name="sync" :size="15" :class="{ spinning: refreshing }" />
-          {{ refreshing ? "同步中" : `同步 ${repo.name}` }}
+          {{ refreshing ? "刷新中" : "刷新社区事实" }}
         </button>
       </div>
+    </div>
+    <div v-if="!context" class="repo-refresh-briefs">
+      <span v-for="brief in refreshBriefs" :key="brief.type">
+        <strong>{{ brief.label }}</strong>{{ brief.value }}
+      </span>
     </div>
   </header>
 </template>

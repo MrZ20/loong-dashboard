@@ -2,6 +2,9 @@ name = "loong-dashboard-local"
 main = "dist/server/index.js"
 compatibility_date = "2025-07-30"
 
+[triggers]
+crons = ["*/15 * * * *"]
+
 [assets]
 directory = "./dist/client"
 binding = "ASSETS"
