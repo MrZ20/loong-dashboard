@@ -1,5 +1,6 @@
 import { generateDomainMapDocument } from "../ai";
-import { parseJson, type WorkerEnv } from "../db";
+import type { WorkerEnv } from "../db";
+import { parseJson } from "../mappers/database-row";
 import {
   architectureMatchesDomain,
   architectureTaxonomyDomains,
@@ -20,7 +21,7 @@ import {
 } from "../repositories/domain-maps";
 import { beijingDate, beijingDayWindow } from "../time";
 import { resolveAITask } from "./ai-task-settings";
-import { enqueueManagedAITask } from "./local-analysis";
+import { enqueueManagedAITask } from "./local-runtime/enqueue";
 
 function unique<T>(values: T[]) {
   return [...new Set(values)];
@@ -155,7 +156,7 @@ export async function createDailyDomainSnapshot(
     ],
   }, null, 2);
   const task = await resolveAITask(env, userId, "domain_architecture_map");
-  if (task.executionMode === "opencode") {
+  if (task.executionMode !== "api") {
     const job = await enqueueManagedAITask(env, {
       userId,
       taskKey: "domain_architecture_map",

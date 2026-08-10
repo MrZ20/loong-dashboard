@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import octicons from "@primer/octicons";
+import { octicons } from "../generated/octicons";
 
 const props = withDefaults(
   defineProps<{
@@ -16,16 +16,21 @@ const props = withDefaults(
 
 const svg = computed(() => {
   const icon = octicons[props.name as keyof typeof octicons] ?? octicons.question;
-  const options: Record<string, string | number> = {
-    width: props.size,
-    height: props.size,
-  };
-
-  if (props.label) {
-    options["aria-label"] = props.label;
-  }
-
-  return icon.toSVG(options);
+  const heights = Object.keys(icon.heights).map(Number).sort((left, right) => left - right);
+  const naturalHeight = heights.reduce(
+    (selected, height) => height <= props.size ? height : selected,
+    heights[0],
+  );
+  const source = icon.heights[String(naturalHeight) as keyof typeof icon.heights];
+  const safeLabel = props.label
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  const accessibility = safeLabel
+    ? `aria-label="${safeLabel}" role="img"`
+    : 'aria-hidden="true"';
+  return `<svg version="1.1" width="${props.size}" height="${props.size}" viewBox="0 0 ${source.width} ${naturalHeight}" class="octicon octicon-${props.name}" ${accessibility} data-component="Octicon">${source.path}</svg>`;
 });
 </script>
 

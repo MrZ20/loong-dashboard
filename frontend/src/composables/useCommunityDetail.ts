@@ -1,15 +1,21 @@
 import { ref } from "vue";
-import { api, ApiError } from "../api/client";
+import { communityApi } from "../api/community";
+import { ApiError } from "../api/core";
+import { localAnalysisApi } from "../api/local-analysis";
 import { communityItemKey } from "../domain/community-item";
+import type { AnalysisDocument, LocalAnalysisEvent, LocalAnalysisJob } from "../types/analysis";
+import type { CommunityItem } from "../types/community";
 import type {
-  AnalysisDocument,
-  CommunityItem,
-  LocalAnalysisEvent,
-  LocalAnalysisJob,
   RefreshTaskType,
-} from "../types";
+} from "../types/refresh";
 
-export function useCommunityDetail(notify: (message: string) => void) {
+const SUMMARY_POLL_INTERVAL_MS = 1_000;
+const SUMMARY_POLL_TIMEOUT_MS = 15 * 60_000;
+
+export function useCommunityDetail(
+  notify: (message: string) => void,
+  onItemUpdated: (item: CommunityItem) => void = () => undefined,
+) {
   const selectedItem = ref<CommunityItem | null>(null);
   const detailAnalysis = ref<AnalysisDocument | null>(null);
   const detailAnalyzing = ref(false);
@@ -29,9 +35,10 @@ export function useCommunityDetail(notify: (message: string) => void) {
   async function reloadSelectedAfterJob(itemKey: string) {
     const current = selectedItem.value;
     if (!current || communityItemKey(current) !== itemKey) return;
-    const result = await api.communityItem(current.repo, current.kind, current.id);
+    const result = await communityApi.communityItem(current.repo, current.kind, current.id);
     if (!selectedItem.value || communityItemKey(selectedItem.value) !== itemKey) return;
     selectedItem.value = result.item;
+    onItemUpdated(result.item);
     detailAnalysis.value = result.analyses[0] ?? detailAnalysis.value;
   }
 
@@ -39,7 +46,7 @@ export function useCommunityDetail(notify: (message: string) => void) {
     stopJobPolling();
     try {
       const after = detailLocalEvents.value.at(-1)?.sequence ?? 0;
-      const result = await api.localAnalysisJob(jobId, after);
+      const result = await localAnalysisApi.localAnalysisJob(jobId, after);
       if (!selectedItem.value || communityItemKey(selectedItem.value) !== itemKey) return;
       detailLocalJob.value = result.job;
       if (result.events.length) detailLocalEvents.value.push(...result.events);
@@ -50,7 +57,7 @@ export function useCommunityDetail(notify: (message: string) => void) {
         return;
       }
       await reloadSelectedAfterJob(itemKey);
-      if (result.job.status === "completed") notify("OpenCode 深度分析已生成");
+      if (result.job.status === "completed") notify("深度分析已生成");
       else if (result.job.status === "cancelled") notify("深度分析已取消");
       else notify(result.job.error || "深度分析失败");
     } catch (cause) {
@@ -61,7 +68,7 @@ export function useCommunityDetail(notify: (message: string) => void) {
 
   async function resumeDetailJob(item: CommunityItem) {
     try {
-      const { jobs } = await api.localAnalysisJobs();
+      const { jobs } = await localAnalysisApi.localAnalysisJobs();
       const subjectKey = `${item.repo}:${item.kind}:${item.id}`;
       const job = jobs.find((candidate) =>
         candidate.jobType === "deep_analysis" &&
@@ -85,7 +92,7 @@ export function useCommunityDetail(notify: (message: string) => void) {
     selectedItem.value = item;
     detailAnalysis.value = null;
     try {
-      const result = await api.communityItem(item.repo, item.kind, item.id);
+      const result = await communityApi.communityItem(item.repo, item.kind, item.id);
       if (
         requestId !== detailRequestId ||
         !selectedItem.value ||
@@ -94,6 +101,7 @@ export function useCommunityDetail(notify: (message: string) => void) {
         return;
       }
       selectedItem.value = result.item;
+      onItemUpdated(result.item);
       detailAnalysis.value = result.analyses[0] ?? null;
       await resumeDetailJob(result.item);
     } catch (cause) {
@@ -106,7 +114,7 @@ export function useCommunityDetail(notify: (message: string) => void) {
   async function analyzeSelectedItem(item: CommunityItem, requirement = "") {
     detailAnalyzing.value = true;
     try {
-      const result = await api.analyzeCommunityItem(
+      const result = await communityApi.analyzeCommunityItem(
         item.repo,
         item.kind,
         item.id,
@@ -140,7 +148,7 @@ export function useCommunityDetail(notify: (message: string) => void) {
   async function cancelDetailAnalysis() {
     if (!detailLocalJob.value) return;
     try {
-      await api.cancelLocalAnalysisJob(detailLocalJob.value.id);
+      await localAnalysisApi.cancelLocalAnalysisJob(detailLocalJob.value.id);
       detailLocalJob.value = { ...detailLocalJob.value, status: "cancel_requested" };
       notify("已请求取消本地分析");
     } catch (cause) {
@@ -154,18 +162,51 @@ export function useCommunityDetail(notify: (message: string) => void) {
   ) {
     detailTaskLoading.value = taskType;
     try {
-      await api.refreshRepositoryTask(
+      const itemKey = communityItemKey(item);
+      await communityApi.refreshRepositoryTask(
         item.repo,
         taskType,
         `${item.repo}:${item.kind}:${item.id}`,
       );
-      const result = await api.communityItem(item.repo, item.kind, item.id);
+      let result = await communityApi.communityItem(item.repo, item.kind, item.id);
+      onItemUpdated(result.item);
+      if (taskType === "summary") {
+        const pollDeadline = Date.now() + SUMMARY_POLL_TIMEOUT_MS;
+        while (
+          Date.now() < pollDeadline &&
+          ["queued", "running"].includes(result.item.summaryStatus || "")
+        ) {
+          if (!selectedItem.value || communityItemKey(selectedItem.value) !== itemKey) return;
+          selectedItem.value = result.item;
+          onItemUpdated(result.item);
+          await new Promise((resolve) => window.setTimeout(resolve, SUMMARY_POLL_INTERVAL_MS));
+          result = await communityApi.communityItem(item.repo, item.kind, item.id);
+        }
+      }
+      if (!selectedItem.value || communityItemKey(selectedItem.value) !== itemKey) return;
       selectedItem.value = result.item;
+      onItemUpdated(result.item);
       detailAnalysis.value = result.analyses[0] ?? detailAnalysis.value;
+      if (taskType === "summary" && result.item.summaryStatus === "failed") {
+        throw new ApiError(
+          500,
+          result.item.summaryVersion?.error || "摘要分析失败",
+        );
+      }
+      if (taskType === "classification" && result.item.classificationStatus === "failed") {
+        throw new ApiError(
+          500,
+          result.item.classificationVersion?.error || "分类标签生成失败",
+        );
+      }
       notify({
         facts: "社区事实已刷新；未触发摘要、分类或深度分析",
-        summary: "摘要已更新；未刷新 GitHub 事实",
-        classification: "分类标签已重新生成",
+        summary: result.item.summaryStatus === "ready"
+          ? "摘要已生成；未刷新 GitHub 事实"
+          : "摘要任务仍在后台运行，可稍后返回查看",
+        classification: result.item.classificationStatus === "running"
+          ? "规则分类已更新；低置信度 AI 补判已在后台运行"
+          : "分类标签已重新生成",
       }[taskType]);
     } catch (cause) {
       notify(cause instanceof ApiError ? cause.message : "任务执行失败");
@@ -180,7 +221,7 @@ export function useCommunityDetail(notify: (message: string) => void) {
     const itemKey = communityItemKey(item);
     detailDiffLoading.value = true;
     try {
-      const result = await api.communityDiffFiles(item.repo, item.id);
+      const result = await communityApi.communityDiffFiles(item.repo, item.id);
       if (
         requestId === detailDiffRequestId &&
         selectedItem.value &&

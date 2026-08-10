@@ -1,4 +1,4 @@
-name = "loong-dashboard-local"
+name = "loong-dashboard"
 main = "dist/server/index.js"
 compatibility_date = "2025-07-30"
 
@@ -12,15 +12,12 @@ not_found_handling = "none"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "loong-dashboard-local"
+database_name = "loong-dashboard"
 database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "drizzle"
 
 [vars]
-ALLOW_DEV_AUTH = "true"
-LOCAL_ADMIN_PASSWORD = "loongboard-local-development-only"
-SESSION_SECRET = "loongboard-local-development-session-secret"
-CREDENTIALS_ENCRYPTION_KEY = "loongboard-local-development-credentials-key"
+ALLOW_DEV_AUTH = "false"
 SEED_DEMO_DATA = "false"
 AI_API_MODE = "responses"
 AI_MODEL = "gpt-5-mini"

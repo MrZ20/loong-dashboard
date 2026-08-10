@@ -1,12 +1,7 @@
 import { encryptCredential } from "../credentials";
 import type { WorkerEnv } from "../db";
 import { HttpError } from "../http";
-import {
-  ensureProfileRow,
-  getActiveProviderId,
-  resetActiveProviderIfSelected,
-  setActiveProviderId,
-} from "../repositories/accounts";
+import { ensureProfileRow } from "../repositories/accounts";
 import {
   deleteProviderRow,
   findProviderByName,
@@ -21,7 +16,6 @@ import {
 
 function mapProvider(
   row: Record<string, any>,
-  activeId: string,
   usedBy: string[] = [],
 ) {
   return {
@@ -33,7 +27,6 @@ function mapProvider(
     model: row.model,
     tokenConfigured: Boolean(row.encrypted_token),
     tokenHint: row.token_hint,
-    active: row.id === activeId,
     builtIn: false,
     usageCount: usedBy.length,
     usedBy,
@@ -66,7 +59,6 @@ export function normalizeProviderUrl(env: WorkerEnv, value: string) {
 
 export async function getAIProviders(env: WorkerEnv, userId: string) {
   await ensureProfileRow(env, userId);
-  const activeId = (await getActiveProviderId(env, userId))?.active_ai_provider_id || "environment";
   const [rows, usageRows] = await Promise.all([
     listProviderRows(env, userId),
     listProviderTaskUsage(env, userId),
@@ -87,12 +79,11 @@ export async function getAIProviders(env: WorkerEnv, userId: string) {
       model: env.AI_MODEL || "gpt-5-mini",
       tokenConfigured: Boolean(env.AI_API_KEY),
       tokenHint: "",
-      active: activeId === "environment",
       builtIn: true,
       usageCount: usage.get("environment")?.length ?? 0,
       usedBy: usage.get("environment") ?? [],
     },
-    ...rows.map((row) => mapProvider(row, activeId, usage.get(row.id) ?? [])),
+    ...rows.map((row) => mapProvider(row, usage.get(row.id) ?? [])),
   ];
 }
 
@@ -106,7 +97,6 @@ export async function saveAIProvider(
     apiMode: string;
     model: string;
     token: string;
-    makeActive: boolean;
   },
 ) {
   const existing = input.providerId
@@ -133,22 +123,7 @@ export async function saveAIProvider(
     tokenHint: input.token ? input.token.slice(-4) : existing?.token_hint || "",
     existing: Boolean(existing),
   });
-  if (input.makeActive) await setActiveProviderId(env, input.userId, id);
-  const activeId = (await getActiveProviderId(env, input.userId))?.active_ai_provider_id || "environment";
-  return { provider: mapProvider(row!, activeId), created: !existing };
-}
-
-export async function activateAIProvider(
-  env: WorkerEnv,
-  userId: string,
-  providerId: string,
-) {
-  if (providerId !== "environment" && !(await findProviderRow(env, userId, providerId))) {
-    return false;
-  }
-  await ensureProfileRow(env, userId);
-  await setActiveProviderId(env, userId, providerId);
-  return true;
+  return { provider: mapProvider(row!), created: !existing };
 }
 
 export async function removeAIProvider(
@@ -166,7 +141,5 @@ export async function removeAIProvider(
     );
   }
   await deleteProviderRow(env, userId, providerId);
-  await ensureProfileRow(env, userId);
-  await resetActiveProviderIfSelected(env, userId, providerId);
   return true;
 }

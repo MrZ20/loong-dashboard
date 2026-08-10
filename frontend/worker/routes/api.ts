@@ -25,6 +25,8 @@ import { handleSettings } from "../settings";
 import { listEnabledRepositories } from "../repositories/repositories";
 import {
   listRefreshSettings,
+  executeQueuedRefreshTask,
+  queueRefreshTask,
   runRefreshTask,
 } from "../services/refresh-management";
 import { isRefreshTaskType } from "../domain/refresh-policy";
@@ -50,7 +52,11 @@ function pathMatch(pathname: string, pattern: RegExp) {
   return match ? match.slice(1).map(decodeURIComponent) : null;
 }
 
-export async function handleApi(request: Request, env: WorkerEnv) {
+export async function handleApi(
+  request: Request,
+  env: WorkerEnv,
+  context?: { waitUntil(promise: Promise<unknown>): void },
+) {
   const url = new URL(request.url);
   const path = url.pathname;
 
@@ -126,13 +132,28 @@ export async function handleApi(request: Request, env: WorkerEnv) {
       throw new HttpError(400, "深度分析只能从具体 PR 或 Issue 启动");
     }
     const body = await readJson<{ itemId?: string }>(request);
+    const itemId = typeof body.itemId === "string" ? body.itemId : null;
+    if (!itemId) {
+      const run = await queueRefreshTask(env, {
+        userId: user.id,
+        repoId: repositoryRefresh[0],
+        taskType,
+        triggerType: "manual",
+      });
+      const execution = executeQueuedRefreshTask(env, run.id);
+      if (context) {
+        context.waitUntil(execution.catch(() => undefined));
+        return json({ run }, { status: 202 });
+      }
+      return json({ run: await execution });
+    }
     return json({
       run: await runRefreshTask(env, {
         userId: user.id,
         repoId: repositoryRefresh[0],
         taskType,
         triggerType: "manual",
-        itemId: typeof body.itemId === "string" ? body.itemId : null,
+        itemId,
       }),
     });
   }

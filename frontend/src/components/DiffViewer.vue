@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import type { DiffStat } from "../types";
+import type { DiffStat } from "../types/community";
 import Octicon from "./Octicon.vue";
 
 const props = withDefaults(

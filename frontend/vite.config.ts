@@ -6,7 +6,7 @@ export default defineConfig({
     outDir: "dist/client",
   },
   optimizeDeps: {
-    include: ["vue", "@primer/octicons"],
+    include: ["vue"],
   },
   server: {
     host: "0.0.0.0",

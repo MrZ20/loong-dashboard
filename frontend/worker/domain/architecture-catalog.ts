@@ -9,7 +9,6 @@ export type DomainArchitecture = {
   testPaths: string[];
   symbols: string[];
   taxonomyDomainIds: Record<RepositoryTaxonomyId, string[]>;
-  legacyDomainNames?: string[];
 };
 
 export type DomainArchitectureEntry = {
@@ -42,8 +41,7 @@ export function architectureMatchesDomain(
   domain: string,
 ) {
   if (repoId !== "vllm" && repoId !== "vllm-ascend") return false;
-  return taxonomyDomainNames(architecture, repoId).includes(domain) ||
-    (architecture.legacyDomainNames ?? []).includes(domain);
+  return taxonomyDomainNames(architecture, repoId).includes(domain);
 }
 
 export function findArchitectureForDomain(
@@ -71,7 +69,6 @@ export const DOMAIN_ARCHITECTURES: Record<string, DomainArchitecture> = {
       vllm: ["fused-moe"],
       "vllm-ascend": ["fused-moe-ops", "eplb"],
     },
-    legacyDomainNames: ["FusedMoE"],
   },
   "Model Runner": {
     description: "输入批处理、模型执行、图捕获以及设备能力注册的连接层。",
@@ -84,7 +81,6 @@ export const DOMAIN_ARCHITECTURES: Record<string, DomainArchitecture> = {
       vllm: ["engine-model-runner"],
       "vllm-ascend": ["worker-graph", "xlite"],
     },
-    legacyDomainNames: ["Model Runner"],
   },
   Scheduler: {
     description: "请求排队、抢占、KV block 分配与长短请求公平性。",
@@ -97,7 +93,6 @@ export const DOMAIN_ARCHITECTURES: Record<string, DomainArchitecture> = {
       vllm: ["scheduler-kv-cache"],
       "vllm-ascend": ["core-scheduler-kv-cache", "kv-offload"],
     },
-    legacyDomainNames: ["Scheduler"],
   },
   Attention: {
     description: "Prefill、Decode、MLA 与 KV Cache 的设备后端实现。",
@@ -110,7 +105,6 @@ export const DOMAIN_ARCHITECTURES: Record<string, DomainArchitecture> = {
       vllm: ["attention"],
       "vllm-ascend": ["attention"],
     },
-    legacyDomainNames: ["Attention"],
   },
   Distributed: {
     description: "多进程执行、Collective RPC、HCCL 与跨节点通信生命周期。",
@@ -123,7 +117,6 @@ export const DOMAIN_ARCHITECTURES: Record<string, DomainArchitecture> = {
       vllm: ["distributed-kv-transfer"],
       "vllm-ascend": ["distributed-kv-transfer"],
     },
-    legacyDomainNames: ["Distributed"],
   },
   "CI / Infra": {
     description: "构建矩阵、缓存、镜像与跨设备测试基础设施。",
@@ -136,7 +129,6 @@ export const DOMAIN_ARCHITECTURES: Record<string, DomainArchitecture> = {
       vllm: ["ci-infra"],
       "vllm-ascend": ["ci-infra"],
     },
-    legacyDomainNames: ["CI / Infra"],
   },
   "Compilation & Kernels": {
     description: "编译图、IR、融合 pass 与设备算子内核的生成和执行基础设施。",

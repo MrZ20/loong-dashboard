@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import type { RepositoryId } from "../types";
+import type { RepositoryId } from "../types/core";
 import AnalysisDocumentWorkspace from "./AnalysisDocumentWorkspace.vue";
-import type { PromptFeatureKey } from "../types";
+import type { PromptFeatureKey } from "../types/ai";
 
 defineProps<{
   repo: RepositoryId;

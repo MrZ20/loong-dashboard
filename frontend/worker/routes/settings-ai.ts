@@ -2,7 +2,6 @@ import { requireUser } from "../auth";
 import type { WorkerEnv } from "../db";
 import { cleanText, HttpError, json, noContent, readJson, requireMethod } from "../http";
 import {
-  activateAIProvider,
   getAIProviders,
   normalizeProviderUrl,
   removeAIProvider,
@@ -22,15 +21,6 @@ export async function handleAIProviderSettings(
   const user = await requireUser(request, env);
   if (path === "/api/settings/ai-providers" && request.method === "GET") {
     return json({ providers: await getAIProviders(env, user.id) });
-  }
-
-  const activateMatch = matchPath(path, /^\/api\/settings\/ai-providers\/([^/]+)\/activate$/);
-  if (activateMatch) {
-    requireMethod(request, ["POST"]);
-    if (!(await activateAIProvider(env, user.id, activateMatch[0]))) {
-      throw new HttpError(404, "AI 配置不存在");
-    }
-    return json({ ok: true, activeProviderId: activateMatch[0] });
   }
 
   const providerMatch = matchPath(path, /^\/api\/settings\/ai-providers\/([^/]+)$/);
@@ -64,7 +54,6 @@ export async function handleAIProviderSettings(
     apiMode: body.apiMode === "chat_completions" ? "chat_completions" : "responses",
     model,
     token: typeof body.token === "string" ? body.token.trim() : "",
-    makeActive: body.makeActive === true,
   });
   if (!result) throw new HttpError(404, "AI 配置不存在");
   if ("conflict" in result) throw new HttpError(409, "同名 AI 配置已经存在");

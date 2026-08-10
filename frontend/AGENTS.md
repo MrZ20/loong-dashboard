@@ -25,10 +25,10 @@ Before making substantial visual changes, use the Product Design plugin's `get-c
 - Technical Markdown documents are stored by technical category and support reading, creating, and editing inside the product.
 - AI chat persists multiple independent threads. The standalone page is the conversation manager for creating, resuming, renaming, and deleting threads; the floating window follows the active thread. Both accept page context and selected webpage text so answers can stay grounded in what the maintainer is reading.
 - Production authentication uses the hosting platform's authenticated ChatGPT identity. Local development login is allowed only when `ALLOW_DEV_AUTH=true`.
-- Settings owns account profiles and AI provider management. Local development may add and switch accounts; each account keeps isolated workspace state and its own active AI provider. Production account identity and switching remain controlled by ChatGPT authentication.
-- AI API tokens configured in Settings stay server-side, are encrypted at rest, and are never returned to the browser. Each account may store and switch among several OpenAI-compatible providers; the environment-variable OpenAI-compatible provider remains a non-deletable debugging option.
+- Settings owns account profiles and AI provider management. Local development may add and switch accounts; each account keeps isolated workspace state and explicit per-task AI bindings. Production account identity and switching remain controlled by ChatGPT authentication.
+- AI API tokens configured in Settings stay server-side, are encrypted at rest, and are never returned to the browser. Each account may store several OpenAI-compatible providers and bind one to each AI task; the environment-variable OpenAI-compatible provider remains a non-deletable debugging option.
 - GitHub Personal Access Tokens configured in Settings are account-scoped, encrypted at rest, and never returned to the browser. They take precedence over the service-level `GITHUB_TOKEN` for GitHub refresh and explicit patch retrieval; the environment token remains a fallback.
-- All configurable AI instructions live in Settings → 提示词中心. Each account may keep multiple templates per AI function and activate exactly one; AI providers and prompt choices remain independent. PR/Issue details, daily reports, insights, and chat may link to the relevant setting but must not expose ad-hoc prompt editors. Keep output schemas, evidence rules, and safety constraints in the central server-side prompt catalog as non-editable system contracts, and snapshot the selected template on generated artifacts.
+- All configurable AI instructions live in Settings → AI 管理. Each account may keep multiple templates per AI function and activate exactly one; AI providers and prompt choices remain independent. PR/Issue details, daily reports, insights, and chat may link to the relevant setting but must not expose ad-hoc prompt editors. Keep output schemas, evidence rules, and safety constraints in the central server-side prompt catalog as non-editable system contracts, and snapshot the selected template on generated artifacts.
 - The desktop sidebar can collapse to an icon-only rail without changing the mobile drawer behavior. Every navigation and settings icon must remain visible in the collapsed state, and the expand/collapse control must stay prominent on the sidebar edge with an unambiguous directional icon.
 - Cross-repository impact statuses that imply a final human decision, especially “已适配” and “不适用”, must remain human-confirmed rather than being set automatically by AI.
 - Production-like local data starts empty: demo seeds are opt-in, excerpts must be labeled as excerpts, and only successful model output may be labeled as an AI summary.
@@ -55,6 +55,5 @@ Build app UI in `src/` and service code in `worker/`. Keep `.openai/hosting.json
 - Keep `src/App.vue` focused on shell composition. Shared state and workflows
   belong in feature composables, API calls in feature modules under `src/api/`,
   and global CSS in ordered feature files imported by `src/styles.css`.
-- Preserve the compatibility facades at `worker/github.ts` and
-  `src/api/client.ts` while existing callers depend on them; add new behavior to
-  the layered modules behind those facades.
+- Import the bounded API modules and domain type modules directly. Do not
+  reintroduce aggregate facades such as `src/api/client.ts` or `src/types.ts`.

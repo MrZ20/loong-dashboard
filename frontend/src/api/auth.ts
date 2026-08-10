@@ -1,4 +1,4 @@
-import type { AuthUser } from "../types";
+import type { AuthUser } from "../types/account";
 import { apiFetch } from "./core";
 
 export const authApi = {
@@ -30,4 +30,3 @@ export const authApi = {
     apiFetch<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
 
 };
-

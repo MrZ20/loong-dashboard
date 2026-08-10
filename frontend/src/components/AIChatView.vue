@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useAIChat } from "../composables/useAIChat";
-import type { PromptFeatureKey } from "../types";
+import type { PromptFeatureKey } from "../types/ai";
 import AIChatMessages from "./AIChatMessages.vue";
 import Octicon from "./Octicon.vue";
 

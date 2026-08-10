@@ -86,37 +86,3 @@ export async function insertAccount(
     [input.id, input.role, input.organization, now],
   );
 }
-
-export function getActiveProviderId(env: WorkerEnv, userId: string) {
-  return first<{ active_ai_provider_id: string | null }>(
-    env,
-    "SELECT active_ai_provider_id FROM user_profiles WHERE user_id = ?",
-    [userId],
-  );
-}
-
-export function setActiveProviderId(
-  env: WorkerEnv,
-  userId: string,
-  providerId: string,
-) {
-  return run(
-    env,
-    "UPDATE user_profiles SET active_ai_provider_id = ?, updated_at = ? WHERE user_id = ?",
-    [providerId, new Date().toISOString(), userId],
-  );
-}
-
-export function resetActiveProviderIfSelected(
-  env: WorkerEnv,
-  userId: string,
-  providerId: string,
-) {
-  return run(
-    env,
-    `UPDATE user_profiles
-     SET active_ai_provider_id = 'environment', updated_at = ?
-     WHERE user_id = ? AND active_ai_provider_id = ?`,
-    [new Date().toISOString(), userId, providerId],
-  );
-}

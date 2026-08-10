@@ -4,14 +4,18 @@ import { handleApi } from "./routes/api";
 import { isKnownApiPath } from "./routes/manifest";
 import { runDueRefreshTasks } from "./services/refresh-management";
 
-async function fetchHandler(request: Request, env: WorkerEnv) {
+async function fetchHandler(
+  request: Request,
+  env: WorkerEnv,
+  context?: { waitUntil(promise: Promise<unknown>): void },
+) {
   const url = new URL(request.url);
   if (url.pathname.startsWith("/api/")) {
     if (!isKnownApiPath(url.pathname)) {
       return handleError(new HttpError(404, "API 接口不存在"));
     }
     try {
-      return await handleApi(request, env);
+      return await handleApi(request, env, context);
     } catch (error) {
       return handleError(error);
     }

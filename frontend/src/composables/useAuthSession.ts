@@ -1,6 +1,7 @@
 import { ref } from "vue";
-import { api, ApiError } from "../api/client";
-import type { AuthUser, UserAccount } from "../types";
+import { authApi } from "../api/auth";
+import { ApiError } from "../api/core";
+import type { AuthUser, UserAccount } from "../types/account";
 
 type AuthSessionOptions = {
   onAuthenticated: () => Promise<void>;
@@ -20,11 +21,11 @@ export function useAuthSession(options: AuthSessionOptions) {
     authLoading.value = true;
     authError.value = "";
     try {
-      const providers = await api.authProviders();
+      const providers = await authApi.authProviders();
       authMode.value = providers.mode;
       signInPath.value = providers.signInPath;
       signOutPath.value = providers.signOutPath;
-      const { user } = await api.me();
+      const { user } = await authApi.me();
       authUser.value = user;
       await options.onAuthenticated();
     } catch (cause) {
@@ -47,7 +48,7 @@ export function useAuthSession(options: AuthSessionOptions) {
     loginLoading.value = true;
     authError.value = "";
     try {
-      await api.devLogin(email, displayName, password);
+      await authApi.devLogin(email, displayName, password);
       await initializeAuth();
     } catch (cause) {
       authError.value =
@@ -62,7 +63,7 @@ export function useAuthSession(options: AuthSessionOptions) {
       window.location.href = signOutPath.value;
       return;
     }
-    await api.logout();
+    await authApi.logout();
     authUser.value = null;
     options.onLoggedOut();
   }

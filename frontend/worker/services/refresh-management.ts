@@ -8,19 +8,25 @@ import {
 import { HttpError } from "../http";
 import {
   beginRefreshTaskRun,
+  claimRefreshTaskRun,
   completeRefreshTaskRun,
   countPendingRefreshItems,
   ensureRefreshTaskConfigs,
   failRefreshTaskRun,
   findRefreshTaskConfig,
+  findQueuedRefreshTaskRun,
   listDueRefreshTaskConfigs,
+  listQueuedRefreshTaskRuns,
   listRefreshTaskConfigs,
+  requeueExpiredRefreshRuns,
   updateRefreshTaskConfig,
   type RefreshTaskConfigRow,
 } from "../repositories/refresh-tasks";
-import { refreshCommunityClassifications } from "./classification-refresh";
-import { refreshCommunityFacts } from "./facts-refresh";
-import { refreshCommunitySummaries } from "./summary-refresh";
+import {
+  getRefreshTaskDefinition,
+  getRefreshTaskHandler,
+} from "./refresh-handlers/registry";
+import type { RefreshTaskRequest } from "./refresh-handlers/types";
 
 function mapRefreshTaskState(row: RefreshTaskConfigRow, pendingCount: number) {
   const now = Date.now();
@@ -37,12 +43,17 @@ function mapRefreshTaskState(row: RefreshTaskConfigRow, pendingCount: number) {
     maxItems: Number(row.max_items),
     includeCiChanges: Boolean(row.include_ci_changes),
     includeCommentChanges: Boolean(row.include_comment_changes),
+    stateFilter: row.state_filter || "all",
+    domainFilter: row.domain_filter || "all",
     status: row.status,
     lastAttemptedAt: row.last_attempted_at,
     lastSuccessfulAt: row.last_successful_at,
     watermarkUpdatedAt: row.watermark_updated_at,
     nextScheduledAt: row.next_scheduled_at,
     lastError: row.last_error,
+    currentStage: row.current_stage || "idle",
+    progressCurrent: Number(row.progress_current ?? 0),
+    progressTotal: Number(row.progress_total ?? 0),
     pendingCount,
     stale: row.status === "failed" ||
       (row.task_type !== "deep_analysis" && pendingCount > 0) ||
@@ -55,12 +66,14 @@ export async function listRefreshSettings(env: WorkerEnv, userId: string) {
   await ensureRefreshTaskConfigs(env, userId);
   const rows = await listRefreshTaskConfigs(env, userId);
   return Promise.all(rows.map(async (row) => {
-    const pending = await countPendingRefreshItems(
-      env,
-      row.repo_id,
-      row.task_type,
-      row.refresh_rule,
-    );
+    const pending = await countPendingRefreshItems(env, {
+      repoId: row.repo_id,
+      taskType: row.task_type,
+      refreshRule: row.refresh_rule,
+      activeRangeHours: Number(row.active_range_hours),
+      stateFilter: row.state_filter || "all",
+      domainFilter: row.domain_filter || "all",
+    });
     return mapRefreshTaskState(row, Number(pending?.count ?? 0));
   }));
 }
@@ -78,12 +91,15 @@ export async function saveRefreshSettings(
     maxItems: number;
     includeCiChanges: boolean;
     includeCommentChanges: boolean;
+    stateFilter: "all" | "open" | "draft" | "merged" | "closed";
+    domainFilter: string;
   }>,
 ) {
   await ensureRefreshTaskConfigs(env, userId);
   const current = await findRefreshTaskConfig(env, userId, repoId, taskType);
   if (!current) throw new HttpError(404, "刷新配置不存在");
   const defaults = REFRESH_DEFAULTS[taskType];
+  const definition = getRefreshTaskDefinition(taskType);
   const intervalMinutes = input.intervalMinutes === null
     ? null
     : Math.min(Math.max(Number(input.intervalMinutes ?? current.interval_minutes ?? defaults.intervalMinutes ?? 60), 15), 43_200);
@@ -92,34 +108,35 @@ export async function saveRefreshSettings(
     2_160,
   );
   const maxItems = Math.min(Math.max(Number(input.maxItems ?? current.max_items), 1), 500);
-  const allowedRules: Record<RefreshTaskType, RefreshRule[]> = {
-    facts: ["updated_since_success"],
-    summary: ["code_only", "code_or_body", "any_update", "manual"],
-    classification: ["first_only", "code_only", "any_update", "manual"],
-    deep_analysis: ["manual"],
-  };
   const candidateRule = input.refreshRule ?? current.refresh_rule;
-  const refreshRule = allowedRules[taskType].includes(candidateRule)
+  const refreshRule = definition.allowedRules.includes(candidateRule)
     ? candidateRule
     : defaults.refreshRule;
+  const allowedStates = ["all", "open", "draft", "merged", "closed"] as const;
+  const requestedState = input.stateFilter ?? current.state_filter ?? "all";
+  const stateFilter = definition.supportsFilters && allowedStates.includes(requestedState)
+    ? requestedState
+    : "all";
+  const requestedDomain = String(input.domainFilter ?? current.domain_filter ?? "all").trim();
+  const domainFilter = definition.supportsFilters && requestedDomain
+    ? requestedDomain.slice(0, 120)
+    : "all";
   await updateRefreshTaskConfig(env, userId, repoId, taskType, {
-    autoEnabled: taskType === "deep_analysis"
+    autoEnabled: !definition.supportsAutomatic || refreshRule === "manual"
       ? false
-      : refreshRule === "manual"
-        ? false
-        : Boolean(input.autoEnabled ?? current.auto_enabled),
-    intervalMinutes: taskType === "classification" || taskType === "deep_analysis"
-      ? null
-      : intervalMinutes,
+      : Boolean(input.autoEnabled ?? current.auto_enabled),
+    intervalMinutes: definition.supportsInterval ? intervalMinutes : null,
     activeRangeHours,
     refreshRule,
     maxItems,
-    includeCiChanges: taskType === "summary" && Boolean(
+    includeCiChanges: definition.supportsSummaryChangeFlags && Boolean(
       input.includeCiChanges ?? current.include_ci_changes,
     ),
-    includeCommentChanges: taskType === "summary" && Boolean(
+    includeCommentChanges: definition.supportsSummaryChangeFlags && Boolean(
       input.includeCommentChanges ?? current.include_comment_changes,
     ),
+    stateFilter,
+    domainFilter,
   });
   const tasks = await listRefreshSettings(env, userId);
   return tasks.find(
@@ -129,13 +146,7 @@ export async function saveRefreshSettings(
 
 export async function runRefreshTask(
   env: WorkerEnv,
-  input: {
-    userId: string;
-    repoId: string;
-    taskType: Exclude<RefreshTaskType, "deep_analysis">;
-    triggerType: "manual" | "scheduled" | "initial";
-    itemId?: string | null;
-  },
+  input: RefreshTaskRequest,
 ) {
   await ensureRefreshTaskConfigs(env, input.userId);
   const config = await findRefreshTaskConfig(
@@ -145,7 +156,9 @@ export async function runRefreshTask(
     input.taskType,
   );
   if (!config) throw new HttpError(404, "刷新配置不存在");
-  if (config.status === "running") throw new HttpError(409, "该刷新任务正在运行");
+  if (["queued", "running"].includes(config.status)) {
+    throw new HttpError(409, "该刷新任务已在队列中或正在运行");
+  }
   const priority = input.itemId ? "high" : "normal";
   const taskRun = await beginRefreshTaskRun(env, {
     userId: input.userId,
@@ -156,38 +169,28 @@ export async function runRefreshTask(
     itemId: input.itemId,
     baseWatermarkAt: config.watermark_updated_at,
   });
+  return executeRefreshTaskRun(env, input, config, taskRun.id, priority);
+}
+
+async function executeRefreshTaskRun(
+  env: WorkerEnv,
+  input: RefreshTaskRequest,
+  config: RefreshTaskConfigRow,
+  runId: string,
+  priority: "normal" | "high",
+) {
   try {
-    const result = input.taskType === "facts"
-      ? await refreshCommunityFacts(env, {
-          userId: input.userId,
-          repoId: input.repoId,
-          watermark: input.itemId ? null : config.watermark_updated_at,
-          activeRangeHours: Number(config.active_range_hours),
-          maxItems: Number(config.max_items),
-          itemId: input.itemId,
-        })
-      : input.taskType === "summary"
-        ? await refreshCommunitySummaries(env, {
-            userId: input.userId,
-            repoId: input.repoId,
-            activeRangeHours: Number(config.active_range_hours),
-            maxItems: Number(config.max_items),
-            itemId: input.itemId,
-            priority,
-          })
-        : await refreshCommunityClassifications(env, {
-            userId: input.userId,
-            repoId: input.repoId,
-            refreshRule: config.refresh_rule,
-            maxItems: Number(config.max_items),
-            itemId: input.itemId,
-            forceManual: input.triggerType === "manual",
-          });
-    const committedWatermarkAt = input.taskType === "facts" && !input.itemId
-      ? (result as { watermark?: string | null }).watermark ?? null
-      : null;
+    const handler = getRefreshTaskHandler(input.taskType);
+    const execution = await handler.execute({
+      env,
+      input,
+      config,
+      runId,
+      priority,
+    });
+    const { result, committedWatermarkAt } = execution;
     const finishedAt = await completeRefreshTaskRun(env, {
-      runId: taskRun.id,
+      runId,
       userId: input.userId,
       repoId: input.repoId,
       taskType: input.taskType,
@@ -195,7 +198,7 @@ export async function runRefreshTask(
       committedWatermarkAt,
     });
     return {
-      id: taskRun.id,
+      id: runId,
       repository: input.repoId,
       taskType: input.taskType,
       status: "ready" as const,
@@ -206,7 +209,7 @@ export async function runRefreshTask(
   } catch (error) {
     const message = error instanceof Error ? error.message : "刷新任务失败";
     await failRefreshTaskRun(env, {
-      runId: taskRun.id,
+      runId,
       userId: input.userId,
       repoId: input.repoId,
       taskType: input.taskType,
@@ -216,24 +219,132 @@ export async function runRefreshTask(
   }
 }
 
-export async function runDueRefreshTasks(env: WorkerEnv) {
-  const due = await listDueRefreshTaskConfigs(env, new Date().toISOString());
-  const results: Array<{ repoId: string; taskType: string; ok: boolean }> = [];
-  for (const config of due) {
-    if (!isRefreshTaskType(config.task_type) || config.task_type === "deep_analysis") continue;
-    if (config.refresh_rule === "manual") continue;
-    try {
-      await runRefreshTask(env, {
-        userId: config.user_id,
-        repoId: config.repo_id,
-        taskType: config.task_type,
-        triggerType: "scheduled",
-      });
-      results.push({ repoId: config.repo_id, taskType: config.task_type, ok: true });
-    } catch {
-      results.push({ repoId: config.repo_id, taskType: config.task_type, ok: false });
+export async function queueRefreshTask(
+  env: WorkerEnv,
+  input: RefreshTaskRequest,
+) {
+  await ensureRefreshTaskConfigs(env, input.userId);
+  await requeueExpiredRefreshRuns(env, new Date().toISOString());
+  const config = await findRefreshTaskConfig(
+    env,
+    input.userId,
+    input.repoId,
+    input.taskType,
+  );
+  if (!config) throw new HttpError(404, "刷新配置不存在");
+  if (config.status === "queued") {
+    const existing = await findQueuedRefreshTaskRun(
+      env,
+      input.userId,
+      input.repoId,
+      input.taskType,
+    );
+    if (existing) {
+      return {
+        id: existing.id,
+        repository: input.repoId,
+        taskType: input.taskType,
+        status: "queued" as const,
+        priority: existing.priority,
+        itemCount: 0,
+      };
     }
   }
+  if (["queued", "running"].includes(config.status)) {
+    throw new HttpError(409, "该刷新任务已在队列中或正在运行");
+  }
+  const priority = input.itemId ? "high" : "normal";
+  const run = await beginRefreshTaskRun(env, {
+    ...input,
+    priority,
+    baseWatermarkAt: config.watermark_updated_at,
+    initialStatus: "queued",
+  });
+  return {
+    id: run.id,
+    repository: input.repoId,
+    taskType: input.taskType,
+    status: "queued" as const,
+    priority,
+    itemCount: 0,
+  };
+}
+
+export async function executeQueuedRefreshTask(env: WorkerEnv, runId: string) {
+  const row = await claimRefreshTaskRun(env, runId);
+  if (!row || !isRefreshTaskType(row.task_type) || row.task_type === "deep_analysis") {
+    return null;
+  }
+  const config = await findRefreshTaskConfig(
+    env,
+    row.user_id,
+    row.repo_id,
+    row.task_type,
+  );
+  if (!config) throw new HttpError(404, "刷新配置不存在");
+  return executeRefreshTaskRun(
+    env,
+    {
+      userId: row.user_id,
+      repoId: row.repo_id,
+      taskType: row.task_type,
+      triggerType: row.trigger_type,
+      itemId: row.item_id,
+    },
+    { ...config, watermark_updated_at: row.base_watermark_at },
+    row.id,
+    row.priority,
+  );
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  work: (item: T) => Promise<void>,
+) {
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      await work(items[index]);
+    }
+  }));
+}
+
+export async function runDueRefreshTasks(env: WorkerEnv) {
+  const now = new Date().toISOString();
+  await requeueExpiredRefreshRuns(env, now);
+  const [due, queued] = await Promise.all([
+    listDueRefreshTaskConfigs(env, now),
+    listQueuedRefreshTaskRuns(env, 10),
+  ]);
+  const results: Array<{ repoId: string; taskType: string; ok: boolean }> = [];
+  await Promise.all([
+    runWithConcurrency(queued, 2, async (run) => {
+      try {
+        await executeQueuedRefreshTask(env, run.id);
+        results.push({ repoId: run.repo_id, taskType: run.task_type, ok: true });
+      } catch {
+        results.push({ repoId: run.repo_id, taskType: run.task_type, ok: false });
+      }
+    }),
+    runWithConcurrency(due, 2, async (config) => {
+      if (!isRefreshTaskType(config.task_type) || config.task_type === "deep_analysis") return;
+      if (config.refresh_rule === "manual") return;
+      try {
+        await runRefreshTask(env, {
+          userId: config.user_id,
+          repoId: config.repo_id,
+          taskType: config.task_type,
+          triggerType: "scheduled",
+        });
+        results.push({ repoId: config.repo_id, taskType: config.task_type, ok: true });
+      } catch {
+        results.push({ repoId: config.repo_id, taskType: config.task_type, ok: false });
+      }
+    }),
+  ]);
   return results;
 }
 

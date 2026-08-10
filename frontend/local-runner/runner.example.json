@@ -2,11 +2,37 @@
   "dashboardUrl": "http://127.0.0.1:4174",
   "runnerToken": "set-the-same-value-as-LOCAL_RUNNER_TOKEN",
   "repositories": {
-    "vllm": "../vllm",
-    "vllm-ascend": "../vllm-ascend"
+    "vllm": {
+      "path": "../vllm",
+      "cloneUrl": "https://github.com/vllm-project/vllm.git"
+    },
+    "vllm-ascend": {
+      "path": "../vllm-ascend",
+      "cloneUrl": "https://github.com/vllm-project/vllm-ascend.git"
+    }
   },
-  "manageOpenCodeServer": true,
-  "opencodePort": 4096,
+  "scratchRoot": ".loongboard/workspaces",
+  "worktreeRoot": ".loongboard/worktrees",
+  "allowedPermissionProfiles": [
+    "safe_readonly",
+    "community_research"
+  ],
+  "engines": {
+    "opencode": {
+      "enabled": true,
+      "manageServer": true,
+      "url": "http://127.0.0.1:4096",
+      "port": 4096,
+      "username": "opencode",
+      "password": "replace-with-a-local-secret",
+      "configPath": "frontend/local-runner/opencode/opencode.json",
+      "configDir": "frontend/local-runner/opencode"
+    },
+    "codex": {
+      "enabled": true,
+      "command": "codex"
+    }
+  },
   "maxConcurrency": 1,
   "worktreeRetentionHours": 24,
   "autoFetch": true,

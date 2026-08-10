@@ -1,5 +1,6 @@
 import { first, run, type WorkerEnv } from "./db";
 import { HttpError } from "./http";
+import { ensureDefaultPromptTemplates } from "./repositories/prompts";
 
 const COOKIE_NAME = "loongboard_session";
 
@@ -140,6 +141,7 @@ export async function getAuthenticatedUser(
        last_seen_at = excluded.last_seen_at`,
     [id, email, displayName, now, now],
   );
+  if (!existing) await ensureDefaultPromptTemplates(env, id);
 
   return {
     id,

@@ -7,6 +7,7 @@ import {
   listAccountRows,
   updateAccountProfile,
 } from "../repositories/accounts";
+import { ensureDefaultPromptTemplates } from "../repositories/prompts";
 
 function mapAccount(row: Record<string, any>, currentUserId: string) {
   return {
@@ -56,6 +57,7 @@ export async function createAccountRecord(
   if (await findAccountByEmail(env, input.email)) return null;
   const id = crypto.randomUUID();
   await insertAccount(env, { ...input, id });
+  await ensureDefaultPromptTemplates(env, id);
   const row = (await listAccountRows(env, id))[0];
   return row ? mapAccount(row, "") : null;
 }

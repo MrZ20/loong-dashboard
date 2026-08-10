@@ -1,14 +1,13 @@
 import type { WorkerEnv } from "../db";
 import {
-  builtInPromptId,
   getPromptDefinition,
   PROMPT_CATALOG,
   type PromptFeatureKey,
 } from "../domain/prompt-catalog";
+import { HttpError } from "../http";
 import {
-  findPromptPreference,
+  findDefaultPromptTemplate,
   findUserPromptTemplate,
-  listPromptPreferences,
   listUserPromptTemplates,
   type PromptTemplateRow,
 } from "../repositories/prompts";
@@ -21,37 +20,30 @@ export interface ResolvedPrompt {
   systemContract: string;
   promptVersion: string;
   revision: number;
-  builtIn: boolean;
+  isDefault: boolean;
 }
 
-function builtInPrompt(featureKey: PromptFeatureKey): ResolvedPrompt {
-  const definition = getPromptDefinition(featureKey);
-  return {
-    featureKey,
-    templateId: builtInPromptId(featureKey),
-    name: definition.defaultName,
-    instruction: definition.defaultInstruction,
-    systemContract: definition.systemContract,
-    promptVersion: definition.promptVersion,
-    revision: definition.revision,
-    builtIn: true,
-  };
-}
-
-function resolvedCustomPrompt(
+function resolvedStoredPrompt(
   featureKey: PromptFeatureKey,
   row: PromptTemplateRow,
 ): ResolvedPrompt {
   const definition = getPromptDefinition(featureKey);
+  if (row.feature_key !== featureKey) {
+    throw new HttpError(409, "所选提示词不属于当前 AI 功能");
+  }
+  const instruction = row.content.trim();
+  if (!instruction) {
+    throw new HttpError(409, `${definition.name} 的提示词为空，任务未执行`);
+  }
   return {
     featureKey,
     templateId: row.id,
     name: row.name,
-    instruction: row.content,
+    instruction,
     systemContract: definition.systemContract,
     promptVersion: definition.promptVersion,
     revision: Number(row.revision || 1),
-    builtIn: false,
+    isDefault: Boolean(row.is_default),
   };
 }
 
@@ -61,51 +53,29 @@ export async function resolvePrompt(
   featureKey: PromptFeatureKey,
   selectedTemplateId?: string | null,
 ): Promise<ResolvedPrompt> {
-  if (selectedTemplateId === builtInPromptId(featureKey)) {
-    return builtInPrompt(featureKey);
+  if (selectedTemplateId === null || selectedTemplateId === "") {
+    throw new HttpError(409, `${getPromptDefinition(featureKey).name} 尚未绑定提示词，任务未执行`);
   }
-  const preference = selectedTemplateId === undefined
-    ? await findPromptPreference(env, userId, featureKey)
-    : null;
-  const activeTemplateId = selectedTemplateId === undefined
-    ? preference?.active_template_id
-    : selectedTemplateId;
-  if (!activeTemplateId) return builtInPrompt(featureKey);
-  const custom = await findUserPromptTemplate(
-    env,
-    userId,
-    activeTemplateId,
-  );
-  if (!custom || custom.feature_key !== featureKey) {
-    return builtInPrompt(featureKey);
+  const template = selectedTemplateId === undefined
+    ? await findDefaultPromptTemplate(env, userId, featureKey)
+    : await findUserPromptTemplate(env, userId, selectedTemplateId);
+  if (!template) {
+    const kind = selectedTemplateId === undefined ? "默认提示词不存在" : "绑定的提示词不存在";
+    throw new HttpError(409, `${getPromptDefinition(featureKey).name}${kind}，任务未执行`);
   }
-  return resolvedCustomPrompt(featureKey, custom);
+  return resolvedStoredPrompt(featureKey, template);
 }
 
 export async function listPromptCenter(
   env: WorkerEnv,
   userId: string,
 ) {
-  const [templates, preferences] = await Promise.all([
-    listUserPromptTemplates(env, userId),
-    listPromptPreferences(env, userId),
-  ]);
-  const activeByFeature = new Map(
-    preferences.map((preference) => [
-      preference.feature_key,
-      preference.active_template_id,
-    ]),
-  );
+  const templates = await listUserPromptTemplates(env, userId);
 
   return PROMPT_CATALOG.map((definition) => {
-    const custom = templates.filter(
+    const stored = templates.filter(
       (template) => template.feature_key === definition.key,
     );
-    const selectedId = activeByFeature.get(definition.key) ?? null;
-    const selectedExists = custom.some((template) => template.id === selectedId);
-    const activeTemplateId = selectedExists
-      ? selectedId!
-      : builtInPromptId(definition.key);
     return {
       key: definition.key,
       name: definition.name,
@@ -113,31 +83,16 @@ export async function listPromptCenter(
       group: definition.group,
       contextSources: definition.contextSources,
       promptVersion: definition.promptVersion,
-      activeTemplateId,
-      templates: [
-        {
-          id: builtInPromptId(definition.key),
-          featureKey: definition.key,
-          name: definition.defaultName,
-          content: definition.defaultInstruction,
-          revision: definition.revision,
-          builtIn: true,
-          active: activeTemplateId === builtInPromptId(definition.key),
-          createdAt: null,
-          updatedAt: null,
-        },
-        ...custom.map((template) => ({
+      templates: stored.map((template) => ({
           id: template.id,
           featureKey: template.feature_key,
           name: template.name,
           content: template.content,
           revision: Number(template.revision || 1),
-          builtIn: false,
-          active: activeTemplateId === template.id,
+          isDefault: Boolean(template.is_default),
           createdAt: template.created_at,
           updatedAt: template.updated_at,
         })),
-      ],
     };
   });
 }

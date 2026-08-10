@@ -1,5 +1,5 @@
 import { ref, watch } from "vue";
-import type { ThemeMode } from "../types";
+import type { ThemeMode } from "../types/core";
 
 export function useAppPreferences() {
   const sidebarCollapsed = ref(

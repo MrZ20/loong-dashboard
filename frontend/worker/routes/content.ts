@@ -1,12 +1,12 @@
 import { generateTechnicalDocument } from "../ai";
 import { requireUser } from "../auth";
+import type { WorkerEnv } from "../db";
 import {
   mapAnalysis,
   mapCommunityItem,
   mapTechnicalDocument,
-  parseJson,
-  type WorkerEnv,
-} from "../db";
+} from "../mappers";
+import { parseJson } from "../mappers/database-row";
 import {
   cleanText,
   HttpError,
@@ -29,7 +29,7 @@ import {
   updateDocumentRow,
 } from "../repositories/content";
 import { resolveAITask } from "../services/ai-task-settings";
-import { enqueueManagedAITask } from "../services/local-analysis";
+import { enqueueManagedAITask } from "../services/local-runtime/enqueue";
 
 export async function handleWatchlist(request: Request, env: WorkerEnv, itemId?: string) {
   const user = await requireUser(request, env);
@@ -114,7 +114,7 @@ export async function generateDocumentDraft(request: Request, env: WorkerEnv) {
     ? body.sourceRefs.map((source) => cleanText(source, 500)).filter(Boolean).slice(0, 50)
     : [];
   const task = await resolveAITask(env, user.id, "technical_document_generation");
-  if (task.executionMode === "opencode") {
+  if (task.executionMode !== "api") {
     const sourceText = sourceRefs.join("\n").toLowerCase();
     const repoScope = sourceText.includes("vllm-ascend")
       ? "vllm-ascend"
@@ -161,6 +161,10 @@ export async function generateDocumentDraft(request: Request, env: WorkerEnv) {
     draft: { contentMd: result.content, summary: generatedSummary },
     provider: result.provider,
     providerName: result.providerName,
+    model: result.model,
+    promptTemplateName: result.prompt.name,
+    promptVersion: result.prompt.promptVersion,
+    promptRevision: result.prompt.revision,
   });
 }
 

@@ -1,9 +1,7 @@
 import { generateAnalysisDocument } from "../ai";
 import { requireUser } from "../auth";
-import {
-  mapAnalysis,
-  type WorkerEnv,
-} from "../db";
+import type { WorkerEnv } from "../db";
+import { mapAnalysis } from "../mappers/analysis";
 import { deduplicateObservedEvents } from "../intelligence";
 import {
   cleanText,
@@ -18,8 +16,10 @@ import {
   listRecentAnalysisRows,
 } from "../repositories/analysis";
 import { beijingDate, beijingDayWindow } from "../time";
-import { enqueueInsightLocalEvidence } from "../services/local-analysis";
-import { enqueueManagedAITask } from "../services/local-analysis";
+import {
+  enqueueInsightLocalEvidence,
+  enqueueManagedAITask,
+} from "../services/local-runtime/enqueue";
 import { aiTaskKeyForFeature } from "../domain/ai-task-catalog";
 import { resolveAITask } from "../services/ai-task-settings";
 
@@ -39,7 +39,7 @@ export async function generateAnalysis(request: Request, env: WorkerEnv) {
   let taskKeyOverride: "local_code_insight" | undefined;
   if (body.useLocalCode === true) {
     const localTask = await resolveAITask(env, user.id, "local_code_insight");
-    if (localTask.executionMode === "opencode") {
+    if (localTask.executionMode !== "api") {
       const job = await enqueueInsightLocalEvidence(env, {
         userId: user.id,
         scope,
@@ -167,7 +167,7 @@ ${impactRows.length ? `## 跨仓库待确认\n\n${impactRows.slice(0, 5).map((it
     scope,
   );
   const task = await resolveAITask(env, user.id, taskKey);
-  if (task.executionMode === "opencode") {
+  if (task.executionMode !== "api") {
     const job = await enqueueManagedAITask(env, {
       userId: user.id,
       taskKey,

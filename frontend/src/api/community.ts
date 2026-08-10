@@ -1,29 +1,72 @@
+import type { AnalysisDocument, LocalAnalysisJob } from "../types/analysis";
 import type {
-  AnalysisDocument,
+  CommunityItem,
   CrossRepoImpact,
   RepositoryMeta,
-  RefreshTaskState,
-  RefreshTaskType,
-  LocalAnalysisJob,
   TodaySummary,
   WatchlistMeta,
-} from "../types";
+} from "../types/community";
+import type { RefreshTaskState, RefreshTaskType } from "../types/refresh";
 import { apiFetch } from "./core";
 import { mapCommunityItem } from "./mappers";
 
-const COMMUNITY_PAGE_SIZE = 200;
+export interface CommunityPageQuery {
+  repo?: string;
+  kind?: "pr" | "issue";
+  domain?: string;
+  state?: "open" | "draft" | "merged" | "closed" | "reopened";
+  q?: string;
+  from?: string;
+  to?: string;
+  sort?: "updated" | "number";
+  limit?: number;
+  offset?: number;
+}
+
+export interface CommunityPage {
+  items: CommunityItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  domains: string[];
+  domainOptions: Array<{
+    value: string;
+    label: string;
+    description: string;
+  }>;
+}
 
 async function fetchCommunityPage(
-  params: Record<string, string | number | undefined> = {},
-) {
+  params: CommunityPageQuery = {},
+): Promise<CommunityPage> {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== "") search.set(key, String(value));
   }
-  const result = await apiFetch<{ items: any[]; total: number }>(
+  const result = await apiFetch<{
+    items: any[];
+    total: number;
+    limit: number;
+    offset: number;
+    domains?: string[];
+    domainOptions?: CommunityPage["domainOptions"];
+  }>(
     `/api/community${search.size ? `?${search}` : ""}`,
   );
-  return result.items.map(mapCommunityItem);
+  return {
+    items: result.items.map(mapCommunityItem),
+    total: Number(result.total ?? 0),
+    limit: Number(result.limit ?? params.limit ?? 100),
+    offset: Number(result.offset ?? params.offset ?? 0),
+    domains: Array.isArray(result.domains) ? result.domains : [],
+    domainOptions: Array.isArray(result.domainOptions)
+      ? result.domainOptions
+      : (result.domains ?? []).map((domain) => ({
+          value: domain,
+          label: domain,
+          description: "该领域来自当前仓库已同步的分类结果。",
+        })),
+  };
 }
 
 export const communityApi = {
@@ -81,22 +124,11 @@ export const communityApi = {
       body: JSON.stringify({ status }),
     }),
 
-  community: fetchCommunityPage,
+  communityPage: fetchCommunityPage,
 
-  communityAll: async (
-    params: Record<string, string | number | undefined> = {},
-  ) => {
-    const items = [];
-    for (let offset = 0; ; offset += COMMUNITY_PAGE_SIZE) {
-      const page = await fetchCommunityPage({
-        ...params,
-        limit: COMMUNITY_PAGE_SIZE,
-        offset,
-      });
-      items.push(...page);
-      if (page.length < COMMUNITY_PAGE_SIZE) return items;
-    }
-  },
+  // Small consumers such as insight target pickers only need the requested page.
+  community: async (params: CommunityPageQuery = {}) =>
+    (await fetchCommunityPage(params)).items,
 
   communityItem: async (
     repo: string,

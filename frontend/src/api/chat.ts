@@ -1,4 +1,5 @@
-import type { ChatMessage, ChatThread, LocalAnalysisJob } from "../types";
+import type { ChatMessage, ChatThread } from "../types/chat";
+import type { LocalAnalysisJob } from "../types/analysis";
 import { apiFetch } from "./core";
 
 export const chatApi = {

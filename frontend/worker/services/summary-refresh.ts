@@ -24,7 +24,7 @@ import {
   saveSummaryResult,
 } from "../repositories/summaries";
 import { resolveAITask } from "./ai-task-settings";
-import { enqueueManagedAITask } from "./local-analysis";
+import { enqueueManagedAITask } from "./local-runtime/enqueue";
 import { ensurePullPatches } from "./pull-details";
 import { withUserGithubToken } from "./github-settings";
 
@@ -37,6 +37,8 @@ export async function refreshCommunitySummaries(
     maxItems: number;
     itemId?: string | null;
     priority: "normal" | "high";
+    stateFilter: string;
+    domainFilter: string;
   },
 ) {
   const [prTask, issueTask] = await Promise.all([
@@ -59,6 +61,8 @@ export async function refreshCommunitySummaries(
     issuePromptVersion: issuePrompt.promptVersion,
     issueTemplateId: issuePrompt.templateId,
     issueRevision: issuePrompt.revision,
+    stateFilter: input.stateFilter,
+    domainFilter: input.domainFilter,
   });
   const githubEnv = await withUserGithubToken(env, input.userId);
   let analyzed = 0;
@@ -119,7 +123,7 @@ export async function refreshCommunitySummaries(
             updatedAt: row.updated_at,
           });
       } else {
-        if (task.executionMode === "opencode") {
+        if (task.executionMode !== "api") {
           finalContext = buildPrAnalysisInput({
             repository: `${row.owner}/${row.name}`,
             number: Number(row.number),
@@ -151,6 +155,7 @@ export async function refreshCommunitySummaries(
             itemId: row.id,
             priority: input.priority === "high" ? 95 : 55,
             request: {
+              number: Number(row.number),
               summaryJobId: job.id,
               analysisContext: finalContext,
               version: {
@@ -181,7 +186,7 @@ export async function refreshCommunitySummaries(
             : null,
         });
       }
-      if (kind === "issue" && task.executionMode === "opencode") {
+      if (kind === "issue" && task.executionMode !== "api") {
         await enqueueManagedAITask(env, {
           userId: input.userId,
           taskKey: task.key,

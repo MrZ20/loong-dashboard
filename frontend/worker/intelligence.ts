@@ -4,11 +4,11 @@ import {
 } from "./domain/architecture-catalog";
 import {
   first,
-  parseJson,
   query,
   run,
   type WorkerEnv,
 } from "./db";
+import { parseJson } from "./mappers/database-row";
 import { beijingDayWindow, formatBeijingTime } from "./time";
 
 const EVENT_LABELS: Record<string, string> = {

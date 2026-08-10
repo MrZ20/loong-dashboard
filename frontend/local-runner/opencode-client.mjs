@@ -49,8 +49,9 @@ export function sanitizeProviderResponse(response) {
 
 export class OpenCodeClient {
   constructor(config) {
-    this.baseUrl = config.opencodeUrl;
-    this.authorization = `Basic ${Buffer.from(`${config.opencodeUsername}:${config.opencodePassword}`).toString("base64")}`;
+    const engine = config.engines.opencode;
+    this.baseUrl = engine.url;
+    this.authorization = `Basic ${Buffer.from(`${engine.username}:${engine.password}`).toString("base64")}`;
   }
 
   async request(path, options = {}) {

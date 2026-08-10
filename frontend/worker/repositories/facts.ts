@@ -1,4 +1,66 @@
-import { first, query, run, type WorkerEnv } from "../db";
+import {
+  batchRun,
+  first,
+  query,
+  run,
+  type DatabaseStatement,
+  type WorkerEnv,
+} from "../db";
+
+export type FactEventInput = {
+  id: string;
+  repoId: string;
+  itemId: string;
+  eventType: string;
+  occurredAt: string;
+  observedAt: string;
+  source: "github" | "facts";
+  actor: string | null;
+};
+
+export type CommunityFactInput = {
+  id: string;
+  repoId: string;
+  kind: "pr" | "issue";
+  number: number;
+  state: string;
+  title: string;
+  author: string;
+  authorAvatar: string | null;
+  body: string;
+  htmlUrl: string | null;
+  comments: number;
+  labels: string[];
+  excerpt: string;
+  statusText: string;
+  important: number;
+  updatedAt: string;
+  createdAt: string | null;
+  mergedAt: string | null;
+  closedAt: string | null;
+  isDraft: boolean;
+  contentHash: string;
+  summaryInputHash: string;
+  fetchedAt: string;
+  baseSha: string | null;
+  headSha: string | null;
+  mergeCommitSha: string | null;
+  bodyHash: string;
+  filesHash: string;
+  factsHash: string;
+  bodyChangedAt: string | null;
+  codeChangedAt: string | null;
+  anyChangedAt: string;
+  diff: Record<string, any> | null;
+  reviewSignal: Record<string, any> | null;
+  summaryStale: boolean;
+  classificationStale: boolean;
+};
+
+const FACT_EVENT_SQL = `INSERT INTO community_events(
+  id, repo_id, item_id, event_type, occurred_at, observed_at, source, actor
+) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(item_id, event_type, occurred_at) DO NOTHING`;
 
 export function findFactItem(env: WorkerEnv, itemId: string) {
   return first<Record<string, any>>(
@@ -6,6 +68,23 @@ export function findFactItem(env: WorkerEnv, itemId: string) {
     "SELECT * FROM community_items WHERE id = ?",
     [itemId],
   );
+}
+
+export async function findFactItems(env: WorkerEnv, itemIds: readonly string[]) {
+  if (!itemIds.length) return [];
+  const rows: Array<Record<string, any>> = [];
+  // Cloudflare D1 enforces a conservative SQLite bind-variable limit. Keep
+  // room for future predicates instead of relying on the desktop SQLite limit.
+  const chunkSize = 90;
+  for (let offset = 0; offset < itemIds.length; offset += chunkSize) {
+    const chunk = itemIds.slice(offset, offset + chunkSize);
+    rows.push(...await query<Record<string, any>>(
+      env,
+      `SELECT * FROM community_items WHERE id IN (${chunk.map(() => "?").join(",")})`,
+      [...chunk],
+    ));
+  }
+  return rows;
 }
 
 export function findFactRepository(env: WorkerEnv, repoId: string) {
@@ -18,23 +97,11 @@ export function findFactRepository(env: WorkerEnv, repoId: string) {
 
 export function insertFactEvent(
   env: WorkerEnv,
-  input: {
-    id: string;
-    repoId: string;
-    itemId: string;
-    eventType: string;
-    occurredAt: string;
-    observedAt: string;
-    source: "github" | "facts";
-    actor: string | null;
-  },
+  input: FactEventInput,
 ) {
   return run(
     env,
-    `INSERT INTO community_events(
-      id, repo_id, item_id, event_type, occurred_at, observed_at, source, actor
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(item_id, event_type, occurred_at) DO NOTHING`,
+    FACT_EVENT_SQL,
     [
       input.id,
       input.repoId,
@@ -48,50 +115,37 @@ export function insertFactEvent(
   );
 }
 
+function factEventStatement(input: FactEventInput): DatabaseStatement {
+  return {
+    sql: FACT_EVENT_SQL,
+    bindings: [
+      input.id,
+      input.repoId,
+      input.itemId,
+      input.eventType,
+      input.occurredAt,
+      input.observedAt,
+      input.source,
+      input.actor,
+    ],
+  };
+}
+
+export function insertFactEvents(env: WorkerEnv, inputs: FactEventInput[]) {
+  return batchRun(env, inputs.map(factEventStatement));
+}
+
 export function saveCommunityFact(
   env: WorkerEnv,
-  input: {
-    id: string;
-    repoId: string;
-    kind: "pr" | "issue";
-    number: number;
-    state: string;
-    title: string;
-    author: string;
-    authorAvatar: string | null;
-    body: string;
-    htmlUrl: string | null;
-    comments: number;
-    labels: string[];
-    excerpt: string;
-    statusText: string;
-    important: number;
-    updatedAt: string;
-    createdAt: string | null;
-    mergedAt: string | null;
-    closedAt: string | null;
-    isDraft: boolean;
-    contentHash: string;
-    summaryInputHash: string;
-    fetchedAt: string;
-    baseSha: string | null;
-    headSha: string | null;
-    mergeCommitSha: string | null;
-    bodyHash: string;
-    filesHash: string;
-    factsHash: string;
-    bodyChangedAt: string | null;
-    codeChangedAt: string | null;
-    anyChangedAt: string;
-    diff: Record<string, any> | null;
-    reviewSignal: Record<string, any> | null;
-    summaryStale: boolean;
-    classificationStale: boolean;
-  },
+  input: CommunityFactInput,
 ) {
-  return run(
-    env,
-    `INSERT INTO community_items(
+  const statement = communityFactStatement(input);
+  return run(env, statement.sql, statement.bindings);
+}
+
+function communityFactStatement(input: CommunityFactInput): DatabaseStatement {
+  return {
+    sql: `INSERT INTO community_items(
       id, repo_id, kind, number, state, title, author, author_avatar, body_md,
       html_url, comments, labels_json, domain, ai_summary, status_text, important,
       updated_at, created_at, merged_at, closed_at, is_draft, content_hash,
@@ -144,7 +198,7 @@ export function saveCommunityFact(
         WHEN COALESCE(community_items.head_sha, '') != COALESCE(excluded.head_sha, '')
           AND community_items.deep_analysis_status = 'ready'
         THEN 'outdated' ELSE community_items.deep_analysis_status END`,
-    [
+    bindings: [
       input.id,
       input.repoId,
       input.kind,
@@ -188,7 +242,11 @@ export function saveCommunityFact(
       input.summaryStale ? 1 : 0,
       input.classificationStale ? 1 : 0,
     ],
-  );
+  };
+}
+
+export function saveCommunityFacts(env: WorkerEnv, inputs: CommunityFactInput[]) {
+  return batchRun(env, inputs.map(communityFactStatement), 40);
 }
 
 export function markCurrentAnalysisOutdated(env: WorkerEnv, itemId: string) {
@@ -197,6 +255,17 @@ export function markCurrentAnalysisOutdated(env: WorkerEnv, itemId: string) {
     `UPDATE analysis_documents SET version_status = 'outdated'
      WHERE scope = ? AND type = 'pr' AND version_status = 'current'`,
     [itemId],
+  );
+}
+
+export function markCurrentAnalysesOutdated(env: WorkerEnv, itemIds: string[]) {
+  return batchRun(
+    env,
+    itemIds.map((itemId) => ({
+      sql: `UPDATE analysis_documents SET version_status = 'outdated'
+        WHERE scope = ? AND type = 'pr' AND version_status = 'current'`,
+      bindings: [itemId],
+    })),
   );
 }
 

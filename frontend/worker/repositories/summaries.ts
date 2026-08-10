@@ -13,6 +13,8 @@ export function listSummaryCandidates(
     issuePromptVersion: string;
     issueTemplateId: string;
     issueRevision: number;
+    stateFilter: string;
+    domainFilter: string;
   },
 ) {
   return query<Record<string, any>>(
@@ -23,6 +25,8 @@ export function listSummaryCandidates(
      WHERE community_items.repo_id = ?
        AND (? IS NULL OR community_items.id = ?)
        AND (? IS NOT NULL OR community_items.updated_at >= ?)
+       AND (? IS NOT NULL OR ? = 'all' OR community_items.state = ?)
+       AND (? IS NOT NULL OR ? = 'all' OR community_items.domain = ?)
        AND (
          community_items.summary_status IN ('missing', 'stale', 'failed')
          OR (community_items.kind = 'pr' AND (
@@ -44,6 +48,12 @@ export function listSummaryCandidates(
       input.itemId ?? null,
       input.itemId ?? null,
       input.cutoff,
+      input.itemId ?? null,
+      input.stateFilter,
+      input.stateFilter,
+      input.itemId ?? null,
+      input.domainFilter,
+      input.domainFilter,
       input.prPromptVersion,
       input.prTemplateId,
       input.prRevision,

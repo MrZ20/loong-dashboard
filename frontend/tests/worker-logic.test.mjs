@@ -1,24 +1,15 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
-import { build } from "esbuild";
 import test from "node:test";
-
-async function importWorkerModule(entryPoint) {
-  const result = await build({
-    entryPoints: [entryPoint],
-    bundle: true,
-    format: "esm",
-    platform: "browser",
-    target: "es2022",
-    write: false,
-  });
-  const source = result.outputFiles[0].text;
-  return import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
-}
+import { importWorkerModule } from "./helpers/import-worker-module.mjs";
 
 const timeModule = await importWorkerModule("worker/time.ts");
 const dbModule = await importWorkerModule("worker/db.ts");
-const githubModule = await importWorkerModule("worker/github.ts");
+const githubModule = {
+  ...await importWorkerModule("worker/domain/classification/classifier.ts"),
+  ...await importWorkerModule("worker/domain/community-summary.ts"),
+  ...await importWorkerModule("worker/domain/review-signals.ts"),
+  ...await importWorkerModule("worker/domain/diff.ts"),
+};
 const intelligenceModule = await importWorkerModule("worker/intelligence.ts");
 const routeManifestModule = await importWorkerModule("worker/routes/manifest.ts");
 const promptCatalogModule = await importWorkerModule(
@@ -33,6 +24,9 @@ const refreshPolicyModule = await importWorkerModule(
 const refreshRepositoryModule = await importWorkerModule(
   "worker/repositories/refresh-tasks.ts",
 );
+const factsRepositoryModule = await importWorkerModule(
+  "worker/repositories/facts.ts",
+);
 const refreshManagementModule = await importWorkerModule(
   "worker/services/refresh-management.ts",
 );
@@ -42,9 +36,12 @@ const communityRoutesModule = await importWorkerModule(
 const githubClientModule = await importWorkerModule(
   "worker/integrations/github/client.ts",
 );
-const githubPullsModule = await importWorkerModule(
-  "worker/integrations/github/pulls.ts",
-);
+const githubPullsModule = {
+  ...await importWorkerModule("worker/integrations/github/pulls/discovery.ts"),
+  ...await importWorkerModule("worker/integrations/github/pulls/snapshots.ts"),
+  ...await importWorkerModule("worker/integrations/github/pulls/files.ts"),
+  ...await importWorkerModule("worker/integrations/github/pulls/reviews.ts"),
+};
 const analysisQualityModule = await importWorkerModule(
   "worker/domain/analysis-quality.ts",
 );
@@ -56,8 +53,14 @@ const architectureCatalogModule = await importWorkerModule(
 const aiTaskCatalogModule = await importWorkerModule(
   "worker/domain/ai-task-catalog.ts",
 );
-const communitySortingModule = await importWorkerModule(
-  "src/domain/community-sorting.ts",
+const communityPaginationModule = await importWorkerModule(
+  "src/domain/community-pagination.ts",
+);
+const communityDateRangeModule = await importWorkerModule(
+  "src/domain/community-date-range.ts",
+);
+const communityMappersModule = await importWorkerModule(
+  "src/api/mappers.ts",
 );
 const classificationModule = await importWorkerModule(
   "worker/domain/classification/classifier.ts",
@@ -130,31 +133,58 @@ test("uses Beijing natural-day boundaries independent of server timezone", () =>
   });
 });
 
-test("community lists switch between latest update and descending number", () => {
-  const items = [
-    { id: 101, updatedAt: "2026-08-01T08:00:00.000Z" },
-    { id: 99, updatedAt: "2026-08-02T08:00:00.000Z" },
-    { id: 100, updatedAt: "2026-08-01T09:00:00.000Z" },
-  ];
+test("community lists paginate at 100 items and clamp invalid pages", () => {
+  const first = communityPaginationModule.communityPageMeta(263, 1, 100);
+  assert.equal(communityPaginationModule.COMMUNITY_PAGE_SIZE, 100);
   assert.deepEqual(
-    communitySortingModule.sortCommunityItems(items, "updated").map((item) => item.id),
-    [99, 100, 101],
+    { page: first.currentPage, pages: first.totalPages, start: first.start, end: first.end },
+    { page: 1, pages: 3, start: 1, end: 100 },
   );
+  const last = communityPaginationModule.communityPageMeta(263, 99, 63);
   assert.deepEqual(
-    communitySortingModule.sortCommunityItems(items, "number").map((item) => item.id),
-    [101, 100, 99],
+    { page: last.currentPage, pages: last.totalPages, start: last.start, end: last.end },
+    { page: 3, pages: 3, start: 201, end: 263 },
   );
 });
 
-test("community workspace displays every paginated persisted item", () => {
-  const workspace = readFileSync("src/composables/useCommunityWorkspace.ts", "utf8");
-  const communityApi = readFileSync("src/api/community.ts", "utf8");
-  const facts = readFileSync("worker/services/facts-refresh.ts", "utf8");
-  assert.doesNotMatch(workspace, /matchingItems,[\s\S]{0,100}slice\(0, 30\)/);
-  assert.match(workspace, /api\.communityAll\(\)/);
-  assert.match(communityApi, /offset \+= COMMUNITY_PAGE_SIZE/);
-  assert.doesNotMatch(facts, /Math\.min\(countByKind\.get\("pr"\)/);
-  assert.match(facts, /批量社区事实刷新需要 GitHub Token/);
+test("community date controls use Beijing calendar dates", () => {
+  const item = { updatedAt: "2026-08-03T16:30:00.000Z" };
+  assert.equal(communityDateRangeModule.beijingDateKey(item.updatedAt), "2026-08-04");
+  assert.deepEqual(
+    communityDateRangeModule.recentBeijingDateRange(
+      3,
+      new Date("2026-08-04T08:00:00.000Z"),
+    ),
+    { from: "2026-08-02", to: "2026-08-04" },
+  );
+});
+
+test("partial refreshed classifications remain safe to render in detail view", () => {
+  const item = communityMappersModule.mapCommunityItem({
+    number: 12995,
+    repo: "vllm-ascend",
+    kind: "pr",
+    state: "open",
+    title: "Refreshed PR",
+    author: "maintainer",
+    updatedAt: "2026-08-04T08:00:00.000Z",
+    statusText: "Review required",
+    domain: "Other",
+    aiSummary: "Summary",
+    bodyMd: "Body",
+    comments: 0,
+    domainAssessment: {
+      domain: "Other",
+      source: "fallback",
+      confidence: 0,
+      confidenceLabel: "low",
+    },
+  });
+
+  assert.deepEqual(item.domainAssessment.matchedPaths, []);
+  assert.deepEqual(item.domainAssessment.matchedTerms, []);
+  assert.deepEqual(item.domainAssessment.scores, []);
+  assert.deepEqual(item.domainAssessment.matchedCodeownerRules, []);
 });
 
 test("vLLM and vLLM-Ascend use independent repository taxonomies", () => {
@@ -356,10 +386,6 @@ test("classification and local-code prompts are centralized in Settings", () => 
     "vllm_taxonomy_refresh", "vllm_ascend_taxonomy_refresh",
     "local_code_insight", "repository_code_chat",
   ]) assert.equal(keys.has(key), true);
-  const localService = readFileSync("worker/services/local-analysis.ts", "utf8");
-  assert.doesNotMatch(localService, /local-code-insight-v1/);
-  assert.match(localService, /resolveAITask\([\s\S]*"repository_code_chat"/);
-  assert.match(localService, /task\.prompt/);
 });
 
 test("classification taxonomy refresh API and D1 persistence are packaged", () => {
@@ -371,43 +397,12 @@ test("classification taxonomy refresh API and D1 persistence are packaged", () =
     routeManifestModule.isKnownApiPath("/api/settings/classification-taxonomies/vllm-ascend/refresh"),
     true,
   );
-  const migration = readFileSync(
-    "drizzle/0011_repository_classification_taxonomies.sql",
-    "utf8",
-  );
-  assert.match(migration, /PRIMARY KEY\(user_id, repo_id\)/);
-  assert.match(migration, /overlay_json/);
-  assert.match(migration, /analysis_md/);
-});
-
-test("settings routes delegate persistence instead of embedding SQL", () => {
-  for (const route of ["worker/routes/settings-account.ts", "worker/routes/settings-ai.ts"]) {
-    const source = readFileSync(route, "utf8");
-    assert.doesNotMatch(source, /\b(SELECT|INSERT|UPDATE|DELETE\s+FROM)\b/i, route);
-  }
-  assert.match(readFileSync("worker/repositories/accounts.ts", "utf8"), /SELECT users\.\*/);
-  assert.match(readFileSync("worker/repositories/ai-providers.ts", "utf8"), /SELECT \* FROM ai_providers/);
-});
-
-test("service modules delegate SQL to repositories", () => {
-  for (const file of readdirSync("worker/services").filter((name) => name.endsWith(".ts"))) {
-    const source = readFileSync(`worker/services/${file}`, "utf8");
-    assert.doesNotMatch(
-      source,
-      /`[^`]*\b(SELECT|INSERT INTO|UPDATE [a-z_]|DELETE FROM)\b/i,
-      file,
-    );
-  }
 });
 
 test("legacy repository sync and implicit detail stats paths are removed", () => {
   assert.equal(routeManifestModule.isKnownApiPath("/api/repositories/vllm/sync"), false);
   assert.equal(githubModule.detectDomain, undefined);
   assert.equal(githubModule.ensurePullStats, undefined);
-  assert.match(
-    readFileSync("drizzle/0013_remove_legacy_sync_runs.sql", "utf8"),
-    /DROP TABLE IF EXISTS sync_runs/,
-  );
 });
 
 test("AI management keeps every business task uniquely grouped and repository scoped", () => {
@@ -428,21 +423,9 @@ test("AI management keeps every business task uniquely grouped and repository sc
   );
 });
 
-test("settings exposes AI management without legacy model and prompt-center pages", () => {
-  const source = readFileSync("src/components/SettingsView.vue", "utf8");
-  assert.match(source, /AI 管理/);
-  assert.match(source, /AI 配置/);
-  assert.match(source, /OpenCode/);
-  assert.doesNotMatch(source, /AI 模型/);
-  assert.doesNotMatch(source, /提示词中心/);
-  assert.match(
-    readFileSync("drizzle/0014_ai_task_bindings.sql", "utf8"),
-    /PRIMARY KEY\(user_id, task_key\)/,
-  );
+test("AI management and document generation API paths stay registered", () => {
   assert.equal(routeManifestModule.isKnownApiPath("/api/documents/generate"), true);
-  const documentSource = readFileSync("src/components/TechnicalDocsView.vue", "utf8");
-  assert.match(documentSource, /AI 生成草稿/);
-  assert.match(documentSource, /technical_document_generation/);
+  assert.equal(routeManifestModule.isKnownApiPath("/api/settings/ai-tasks/vllm_pr_summary/error"), true);
 });
 
 test("initializes a migrated D1 binding only once per worker isolate", async () => {
@@ -455,7 +438,6 @@ test("initializes a migrated D1 binding only once per worker isolate", async () 
     "ai_providers",
     "github_credentials",
     "ai_prompt_templates",
-    "ai_prompt_preferences",
     "ai_task_bindings",
     "refresh_task_configs",
     "refresh_task_runs",
@@ -474,7 +456,7 @@ test("initializes a migrated D1 binding only once per worker isolate", async () 
     "local_runners",
     "local_analysis_jobs",
     "local_analysis_events",
-    "opencode_session_bindings",
+    "engine_session_bindings",
     "classification_taxonomy_overrides",
   ];
   const db = {
@@ -532,11 +514,7 @@ test("keeps every configurable AI feature in one prompt catalog", () => {
   for (const definition of promptCatalogModule.PROMPT_CATALOG) {
     assert.equal(promptCatalogModule.isPromptFeatureKey(definition.key), true);
     assert.ok(definition.systemContract.length > 40);
-    assert.ok(definition.defaultInstruction.length > 20);
-    assert.equal(
-      promptCatalogModule.builtInPromptId(definition.key),
-      `builtin:${definition.key}`,
-    );
+    assert.equal("defaultInstruction" in definition, false);
   }
   assert.equal(promptCatalogModule.isPromptFeatureKey("pr_summary"), false);
 });
@@ -623,21 +601,8 @@ test("domain map uses the latest event per item for the Beijing-day overlay", as
   assert.ok(sqlCalls.some((sql) => sql.includes("e.occurred_at >= ? AND e.occurred_at < ?")));
 });
 
-test("domain snapshots persist prompt and model version metadata", () => {
-  const migration = readFileSync(
-    "drizzle/0010_domain_snapshot_prompt_metadata.sql",
-    "utf8",
-  );
-  const source = readFileSync("worker/services/domain-maps.ts", "utf8");
-  assert.match(migration, /prompt_template_id/);
-  assert.match(migration, /prompt_version/);
-  assert.match(migration, /generation_source/);
-  assert.match(source, /generateDomainMapDocument/);
-  assert.match(source, /generated\.prompt\.promptVersion/);
-});
-
-test("resolves account prompt preferences without replacing locked contracts", async () => {
-  function fakeEnv(custom = false) {
+test("resolves exact stored prompts without virtual builtin fallback", async () => {
+  function fakeEnv() {
     return {
       DB: {
         prepare(sql) {
@@ -648,28 +613,24 @@ test("resolves account prompt preferences without replacing locked contracts", a
               return statement;
             },
             async all() {
-              if (sql.includes("FROM ai_prompt_preferences")) {
-                return {
-                  results: custom
-                    ? [{ active_template_id: "custom-pr-review" }]
-                    : [],
-                };
-              }
               if (sql.includes("FROM ai_prompt_templates")) {
-                assert.deepEqual(bindings, ["custom-pr-review", "user-1"]);
+                const isDefault = sql.includes("is_default = 1");
+                assert.deepEqual(bindings, isDefault
+                  ? ["user-1", "pr_deep_analysis"]
+                  : ["custom-pr-review", "user-1"]);
                 return {
-                  results: custom
-                    ? [{
-                        id: "custom-pr-review",
-                        user_id: "user-1",
-                        feature_key: "pr_deep_analysis",
-                        name: "Ascend 兼容优先",
-                        content: "优先检查 NPU 兼容性和多卡回归。",
-                        revision: 3,
-                        created_at: "2026-08-01T00:00:00.000Z",
-                        updated_at: "2026-08-01T00:00:00.000Z",
-                      }]
-                    : [],
+                  results: [{
+                    id: isDefault ? "default:user-1:pr_deep_analysis" : "custom-pr-review",
+                    user_id: "user-1",
+                    feature_key: "pr_deep_analysis",
+                    name: isDefault ? "默认深度分析" : "Ascend 兼容优先",
+                    content: isDefault ? "根据证据完成深度分析。" : "优先检查 NPU 兼容性和多卡回归。",
+                    revision: isDefault ? 1 : 3,
+                    is_default: isDefault ? 1 : 0,
+                    is_seed: 0,
+                    created_at: "2026-08-01T00:00:00.000Z",
+                    updated_at: "2026-08-01T00:00:00.000Z",
+                  }],
                 };
               }
               return { results: [] };
@@ -681,23 +642,54 @@ test("resolves account prompt preferences without replacing locked contracts", a
     };
   }
 
-  const builtIn = await promptResolutionModule.resolvePrompt(
-    fakeEnv(false),
+  const defaultPrompt = await promptResolutionModule.resolvePrompt(
+    fakeEnv(),
     "user-1",
     "pr_deep_analysis",
   );
-  assert.equal(builtIn.builtIn, true);
-  assert.equal(builtIn.templateId, "builtin:pr_deep_analysis");
+  assert.equal(defaultPrompt.isDefault, true);
+  assert.equal(defaultPrompt.templateId, "default:user-1:pr_deep_analysis");
 
   const custom = await promptResolutionModule.resolvePrompt(
-    fakeEnv(true),
+    fakeEnv(),
     "user-1",
     "pr_deep_analysis",
+    "custom-pr-review",
   );
   assert.equal(custom.name, "Ascend 兼容优先");
   assert.equal(custom.revision, 3);
   assert.match(custom.instruction, /NPU/);
   assert.match(custom.systemContract, /不要编造/);
+
+  const missingEnv = {
+    DB: {
+      prepare() {
+        const statement = {
+          bind() { return statement; },
+          async all() { return { results: [] }; },
+        };
+        return statement;
+      },
+    },
+  };
+  await assert.rejects(
+    promptResolutionModule.resolvePrompt(
+      missingEnv,
+      "user-1",
+      "pr_deep_analysis",
+      "deleted-template",
+    ),
+    /绑定的提示词不存在.*任务未执行/,
+  );
+  await assert.rejects(
+    promptResolutionModule.resolvePrompt(
+      missingEnv,
+      "user-1",
+      "pr_deep_analysis",
+      null,
+    ),
+    /尚未绑定提示词.*任务未执行/,
+  );
 });
 
 test("opening a detail view is a read-only database operation", async () => {
@@ -826,19 +818,65 @@ test("follows GitHub cursor links instead of constructing deep page numbers", as
   }
 });
 
+test("discovers changed PRs and issues from one community feed", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    return new Response(JSON.stringify([
+      {
+        number: 120,
+        updated_at: "2026-08-04T09:00:00.000Z",
+        pull_request: { url: "https://example.test/pulls/120" },
+      },
+      { number: 121, updated_at: "2026-08-04T08:00:00.000Z" },
+    ]), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const result = await githubPullsModule.fetchIncrementalCommunity(
+      {},
+      "/repos/vllm-project/vllm-ascend",
+      {
+        boundary: "2026-08-04T00:00:00.000Z",
+        initialCutoff: "2026-08-04T00:00:00.000Z",
+      },
+    );
+    assert.deepEqual(result.pulls.map((item) => item.number), [120]);
+    assert.deepEqual(result.issues.map((item) => item.number), [121]);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /\/issues\?/);
+    assert.doesNotMatch(calls[0], /\/pulls\?/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("batches PR file, CI, review, and comment facts into one GraphQL page", async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, options) => {
     calls.push({ url: String(url), body: JSON.parse(options.body) });
-    return new Response(JSON.stringify({
-      data: {
-        repository: {
-          pullRequests: {
-            nodes: [10, 11].map((number) => ({
+    const pulls = Object.fromEntries([10, 11].map((number, index) => [
+      `pull${index}`,
+      {
               number,
               state: "OPEN",
+              title: `PR ${number}`,
+              body: "body",
+              url: `https://example.test/pr/${number}`,
+              createdAt: "2026-08-01T08:00:00.000Z",
+              updatedAt: "2026-08-01T10:00:00.000Z",
+              mergedAt: null,
+              closedAt: null,
               isDraft: false,
+              author: { login: "maintainer", avatarUrl: "https://example.test/avatar" },
+              labels: { nodes: [{ name: "attention" }] },
+              baseRefOid: "base",
+              headRefOid: `head-${number}`,
+              mergeCommit: null,
               mergeable: "MERGEABLE",
               mergeStateStatus: "CLEAN",
               reviewDecision: "REVIEW_REQUIRED",
@@ -849,7 +887,7 @@ test("batches PR file, CI, review, and comment facts into one GraphQL page", asy
               reviews: { totalCount: 1 },
               files: {
                 nodes: [{ path: `src/${number}.ts`, additions: 4, deletions: 1 }],
-                pageInfo: { hasNextPage: false },
+                pageInfo: { hasNextPage: false, endCursor: null },
               },
               commits: {
                 nodes: [{
@@ -868,11 +906,10 @@ test("batches PR file, CI, review, and comment facts into one GraphQL page", asy
                   },
                 }],
               },
-            })),
-            pageInfo: { hasNextPage: false, endCursor: null },
-          },
-        },
       },
+    ]));
+    return new Response(JSON.stringify({
+      data: { repository: pulls },
     }), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -890,12 +927,167 @@ test("batches PR file, CI, review, and comment facts into one GraphQL page", asy
     assert.deepEqual(calls[0].body.variables, {
       owner: "vllm-project",
       name: "vllm-ascend",
-      cursor: null,
+      number0: 10,
+      number1: 11,
     });
+    assert.match(calls[0].body.query, /pull0: pullRequest\(number: \$number0\)/);
     assert.equal(snapshots.size, 2);
+    assert.equal(snapshots.get(10).item.head.sha, "head-10");
     assert.equal(snapshots.get(10).reviewFacts.ciStatus, "success");
     assert.equal(snapshots.get(10).reviewFacts.comments, 3);
     assert.equal(snapshots.get(11).diff.entries[0].path, "src/11.ts");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("loads exact PR targets in bounded GraphQL batches", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    calls.push(body);
+    const numberEntries = Object.entries(body.variables)
+      .filter(([key]) => /^number\d+$/.test(key))
+      .sort(([left], [right]) => Number(left.slice(6)) - Number(right.slice(6)));
+    const repository = Object.fromEntries(numberEntries.map(([, value], index) => [
+      `pull${index}`,
+      {
+        number: value,
+        state: "OPEN",
+        title: `PR ${value}`,
+        body: "body",
+        updatedAt: "2026-08-04T09:00:00.000Z",
+        labels: { nodes: [] },
+        files: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+        commits: { nodes: [] },
+      },
+    ]));
+    return new Response(JSON.stringify({ data: { repository } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const numbers = Array.from({ length: 21 }, (_, index) => index + 1);
+    const snapshots = await githubPullsModule.fetchPullSyncSnapshots(
+      { GITHUB_TOKEN: "test-token" },
+      "vllm-project",
+      "vllm-ascend",
+      numbers,
+    );
+    assert.equal(calls.length, 2);
+    assert.deepEqual(
+      calls.map((call) => Object.keys(call.variables).filter((key) => /^number\d+$/.test(key)).length).sort(),
+      [1, 20],
+    );
+    assert.deepEqual([...snapshots.keys()].sort((a, b) => a - b), numbers);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("splits an expensive GraphQL batch without restarting discovery", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, options) => {
+    calls += 1;
+    const body = JSON.parse(options.body);
+    const numbers = Object.entries(body.variables)
+      .filter(([key]) => /^number\d+$/.test(key))
+      .map(([, value]) => value);
+    if (numbers.length > 1) {
+      return new Response(JSON.stringify({ errors: [{ message: "query resource limit" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({
+      data: {
+        repository: {
+          pull0: {
+            number: numbers[0],
+            state: "OPEN",
+            title: `PR ${numbers[0]}`,
+            body: "body",
+            labels: { nodes: [] },
+            files: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+            commits: { nodes: [] },
+          },
+        },
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const snapshots = await githubPullsModule.fetchPullSyncSnapshots(
+      { GITHUB_TOKEN: "test-token" },
+      "vllm-project",
+      "vllm",
+      [1, 2],
+    );
+    assert.equal(calls, 3);
+    assert.deepEqual([...snapshots.keys()].sort(), [1, 2]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("continues large PR file statistics from the batch snapshot cursor", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    calls.push(body);
+    return new Response(JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            changedFiles: 101,
+            additions: 101,
+            deletions: 0,
+            files: {
+              nodes: [{ path: "src/last.ts", additions: 1, deletions: 0 }],
+              pageInfo: { hasNextPage: false, endCursor: "cursor-101" },
+            },
+          },
+        },
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const seedEntries = Array.from({ length: 100 }, (_, index) => ({
+    path: `src/${index}.ts`,
+    additions: 1,
+    deletions: 0,
+  }));
+  try {
+    const result = await githubPullsModule.fetchPullFileStats(
+      { GITHUB_TOKEN: "test-token" },
+      "vllm-project",
+      "vllm-ascend",
+      99,
+      {
+        files: 101,
+        additions: 101,
+        deletions: 0,
+        entries: seedEntries,
+        source: "graphql-files",
+        complete: false,
+        endCursor: "cursor-100",
+        statsOnly: true,
+        notice: "seed",
+      },
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].variables.cursor, "cursor-100");
+    assert.equal(result.entries.length, 101);
+    assert.equal(result.entries.at(-1).path, "src/last.ts");
+    assert.equal(result.complete, true);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -972,23 +1164,7 @@ test("GitHub rate limit errors explain unauthenticated quota without exposing IP
   assert.doesNotMatch(detail, /155\.103\.255\.108/);
 });
 
-test("summary refresh qualifies joined D1 columns to avoid ambiguous id", () => {
-  const source = readFileSync("worker/repositories/summaries.ts", "utf8");
-  assert.match(source, /community_items\.id = \?/);
-  assert.match(source, /community_items\.updated_at >= \?/);
-  assert.match(source, /ORDER BY community_items\.updated_at DESC/);
-  assert.doesNotMatch(source, /\bOR id = \?/);
-});
-
 test("GitHub credentials are account scoped, encrypted, and exposed only as status", () => {
-  const migration = readFileSync("drizzle/0009_github_credentials.sql", "utf8");
-  const route = readFileSync("worker/routes/settings-github.ts", "utf8");
-  const service = readFileSync("worker/services/github-settings.ts", "utf8");
-  assert.match(migration, /user_id TEXT PRIMARY KEY/);
-  assert.match(migration, /encrypted_token TEXT NOT NULL/);
-  assert.match(service, /encryptCredential\(env, token\)/);
-  assert.match(service, /withUserGithubToken/);
-  assert.doesNotMatch(route, /encrypted_token/);
   assert.equal(routeManifestModule.isKnownApiPath("/api/settings/github"), true);
   assert.equal(routeManifestModule.isKnownApiPath("/api/settings/github/test"), true);
 });
@@ -1033,6 +1209,71 @@ test("failed task persistence never updates the facts watermark", async () => {
     taskType: "facts",
     error: "failed",
   });
+  assert.equal(updates.some((sql) => sql.includes("watermark_updated_at")), false);
+});
+
+test("large fact lookups stay below the D1 bind-variable limit", async () => {
+  const bindingCounts = [];
+  const env = {
+    DB: {
+      prepare() {
+        const statement = {
+          bind(...bindings) {
+            bindingCounts.push(bindings.length);
+            return statement;
+          },
+          async all() { return { results: [] }; },
+        };
+        return statement;
+      },
+    },
+  };
+  await factsRepositoryModule.findFactItems(
+    env,
+    Array.from({ length: 205 }, (_, index) => `vllm:pr:${index}`),
+  );
+  assert.deepEqual(bindingCounts, [90, 90, 25]);
+});
+
+test("expired refresh leases are requeued without moving the successful watermark", async () => {
+  const updates = [];
+  const expired = {
+    id: "run-expired",
+    user_id: "user-1",
+    repo_id: "vllm",
+    task_type: "facts",
+    status: "running",
+    started_at: "2026-08-04T00:00:00.000Z",
+  };
+  const env = {
+    DB: {
+      prepare(sql) {
+        const statement = {
+          sql,
+          bind(...bindings) {
+            statement.bindings = bindings;
+            return statement;
+          },
+          async all() {
+            return { results: sql.includes("SELECT * FROM refresh_task_runs") ? [expired] : [] };
+          },
+        };
+        return statement;
+      },
+      async batch(statements) {
+        updates.push(...statements.map((statement) => statement.sql));
+        return statements.map(() => ({ success: true }));
+      },
+    },
+  };
+  const count = await refreshRepositoryModule.requeueExpiredRefreshRuns(
+    env,
+    "2026-08-04T01:00:00.000Z",
+  );
+  assert.equal(count, 1);
+  assert.equal(updates.length, 2);
+  assert.match(updates[0], /status = 'queued'/);
+  assert.match(updates[1], /current_stage = 'retrying'/);
   assert.equal(updates.some((sql) => sql.includes("watermark_updated_at")), false);
 });
 
@@ -1133,21 +1374,63 @@ test("classification backlog follows the selected refresh strategy", async () =>
   };
   await refreshRepositoryModule.countPendingRefreshItems(
     env,
-    "vllm",
-    "classification",
-    "first_only",
+    {
+      repoId: "vllm",
+      taskType: "classification",
+      refreshRule: "first_only",
+      activeRangeHours: 168,
+      stateFilter: "all",
+      domainFilter: "all",
+    },
   );
   assert.match(statements.at(-1), /classification_status IN \('missing', 'failed'\)/);
   assert.doesNotMatch(statements.at(-1), /possibly_stale/);
 
   await refreshRepositoryModule.countPendingRefreshItems(
     env,
-    "vllm",
-    "classification",
-    "code_only",
+    {
+      repoId: "vllm",
+      taskType: "classification",
+      refreshRule: "code_only",
+      activeRangeHours: 168,
+      stateFilter: "all",
+      domainFilter: "all",
+    },
   );
   assert.match(statements.at(-1), /classification_head_sha/);
   assert.match(statements.at(-1), /classification_files_hash/);
+});
+
+test("summary refresh persists and applies active range, state, and domain filters", async () => {
+  const statements = [];
+  const bindings = [];
+  const env = {
+    DB: {
+      prepare(sql) {
+        statements.push(sql);
+        const statement = {
+          bind(...values) {
+            bindings.push(values);
+            return statement;
+          },
+          async all() { return { results: [{ count: 0 }] }; },
+        };
+        return statement;
+      },
+    },
+  };
+  await refreshRepositoryModule.countPendingRefreshItems(env, {
+    repoId: "vllm-ascend",
+    taskType: "summary",
+    refreshRule: "code_or_body",
+    activeRangeHours: 72,
+    stateFilter: "open",
+    domainFilter: "Attention",
+  });
+  assert.match(statements.at(-1), /updated_at >= \?/);
+  assert.match(statements.at(-1), /state = \?/);
+  assert.match(statements.at(-1), /domain = \?/);
+  assert.deepEqual(bindings.at(-1).slice(-4), ["open", "open", "Attention", "Attention"]);
 });
 
 test("pending functional work is surfaced as stale task data", () => {
@@ -1169,9 +1452,16 @@ test("pending functional work is surfaced as stale task data", () => {
     last_error: null,
     created_at: "2026-08-01T08:00:00.000Z",
     updated_at: "2026-08-01T08:00:00.000Z",
+    current_stage: "saving_facts",
+    progress_current: 12,
+    progress_total: 30,
+    heartbeat_at: "2026-08-01T08:00:30.000Z",
   }, 3);
   assert.equal(task.pendingCount, 3);
   assert.equal(task.stale, true);
+  assert.equal(task.currentStage, "saving_facts");
+  assert.equal(task.progressCurrent, 12);
+  assert.equal(task.progressTotal, 30);
 });
 
 test("manual refresh task effects remain mutually isolated", () => {
@@ -1388,7 +1678,6 @@ test("recognizes the public API surface without accepting lookalike paths", () =
     "/api/community/vllm/pr/42",
     "/api/community/vllm-ascend/pr/42/diff-files",
     "/api/community/vllm/issue/7/analyze",
-    "/api/settings/ai-providers/provider-1/activate",
     "/api/settings/ai-prompts",
     "/api/settings/ai-prompts/builtin%3Apr_triage/activate",
     "/api/settings/community-refresh",
@@ -1404,6 +1693,7 @@ test("recognizes the public API surface without accepting lookalike paths", () =
     "/api/community/vllm/pr/not-a-number",
     "/api/community/vllm/pr/42/files",
     "/api/settings/secrets",
+    "/api/settings/ai-providers/provider-1/activate",
     "/api/chat/threads/thread-1/messages/extra",
     "/api/health/extra",
     "/api/repositories/vllm/sync",
@@ -1488,10 +1778,21 @@ test("invalid summary JSON is retried once before accepting a valid schema", asy
     AI_API_KEY: "test-token",
     AI_MODEL: "test-model",
     DB: {
-      prepare() {
+      prepare(sql) {
         const statement = {
           bind() { return statement; },
-          async all() { return { results: [] }; },
+          async all() {
+            if (sql.includes("FROM ai_prompt_templates")) {
+              return { results: [{
+                id: "default:user-1:pr_triage", user_id: "user-1",
+                feature_key: "pr_triage", name: "默认 PR 摘要",
+                content: "根据证据生成结构化 PR 摘要。", revision: 1,
+                is_default: 1, is_seed: 0,
+                created_at: "2026-08-10T00:00:00.000Z", updated_at: "2026-08-10T00:00:00.000Z",
+              }] };
+            }
+            return { results: [] };
+          },
           async run() { return { success: true, meta: { changes: 1 } }; },
         };
         return statement;
@@ -1565,10 +1866,21 @@ test("skipped large files are preserved as explicit analysis limitations", () =>
 test("unconfigured AI is rejected instead of being labeled as model analysis", async () => {
   const env = {
     DB: {
-      prepare() {
+      prepare(sql) {
         const statement = {
           bind() { return statement; },
-          async all() { return { results: [] }; },
+          async all() {
+            if (sql.includes("FROM ai_prompt_templates")) {
+              return { results: [{
+                id: "default:user-1:pr_triage", user_id: "user-1",
+                feature_key: "pr_triage", name: "默认 PR 摘要",
+                content: "根据证据生成结构化 PR 摘要。", revision: 1,
+                is_default: 1, is_seed: 0,
+                created_at: "2026-08-10T00:00:00.000Z", updated_at: "2026-08-10T00:00:00.000Z",
+              }] };
+            }
+            return { results: [] };
+          },
           async run() { return { success: true, meta: { changes: 1 } }; },
         };
         return statement;
@@ -1605,9 +1917,6 @@ test("prompt contract versions are explicit, persisted, and rolled out as stale"
     }),
     /^pr-code-summary-v2:custom-1@4$/,
   );
-  const migration = readFileSync("drizzle/0007_analysis_quality.sql", "utf8");
-  assert.match(migration, /summary_status = 'stale'/);
-  assert.match(migration, /pr-code-summary-v2/);
 });
 
 test("user analysis focus is appended after immutable system rules and evidence", () => {

@@ -1,13 +1,13 @@
 import { decryptCredential } from "../credentials";
 import type { WorkerEnv } from "../db";
 import type { AITaskKey } from "../domain/ai-task-catalog";
+import { isLocalAgentEngine, localAgentEngineName } from "../domain/local-analysis";
 import { HttpError } from "../http";
 import {
   requestOpenAICompatible,
   type AIMessage,
   type OpenAICompatibleConfig,
 } from "../integrations/ai/openai-compatible";
-import { getActiveProviderId } from "../repositories/accounts";
 import { findProviderRow } from "../repositories/ai-providers";
 import {
   ensurePersistedAITask,
@@ -21,7 +21,7 @@ export interface ManagedAIResult {
   model: string;
   provider: "api" | "fallback";
   providerName: string;
-  executionMode: "environment" | "account_api";
+  executionMode: "api";
   taskKey: AITaskKey | null;
 }
 
@@ -32,10 +32,9 @@ function normalizeBaseUrl(value: string | undefined) {
 async function providerConfig(
   env: WorkerEnv,
   userId: string,
-  mode: "environment" | "account_api",
   providerId: string,
 ): Promise<OpenAICompatibleConfig> {
-  if (mode === "account_api") {
+  if (providerId !== "environment") {
     const row = await findProviderRow(env, userId, providerId);
     if (!row) throw new HttpError(409, "AI 任务绑定的账户 API 配置不存在，请在 AI 管理中重新选择");
     return {
@@ -66,10 +65,13 @@ export async function executeResolvedAITask(
     fallback: string;
   },
 ): Promise<ManagedAIResult> {
-  if (input.task.executionMode === "opencode") {
+  if (input.task.executionMode !== "api") {
+    const engineName = isLocalAgentEngine(input.task.executionMode)
+      ? localAgentEngineName(input.task.executionMode)
+      : input.task.executionMode;
     throw new HttpError(
       409,
-      `${input.task.definition.name} 已配置为 OpenCode，必须通过本地 Runner 队列执行`,
+      `${input.task.definition.name} 已配置为 ${engineName}，必须通过本地 Runner 队列执行`,
     );
   }
   await ensurePersistedAITask(env, input.userId, input.task);
@@ -77,7 +79,6 @@ export async function executeResolvedAITask(
   const config = await providerConfig(
     env,
     input.userId,
-    input.task.executionMode,
     input.task.providerConfigId,
   );
   if (!config.configured) {
@@ -132,35 +133,3 @@ export async function executeAITask(
   const task = await resolveAITask(env, input.userId, input.taskKey);
   return executeResolvedAITask(env, { ...input, task });
 }
-
-export async function executeLegacyActiveProvider(
-  env: WorkerEnv,
-  userId: string,
-  messages: AIMessage[],
-  fallback: string,
-): Promise<ManagedAIResult> {
-  const active = await getActiveProviderId(env, userId);
-  const providerId = active?.active_ai_provider_id || "environment";
-  const mode = providerId === "environment" ? "environment" : "account_api";
-  const config = await providerConfig(env, userId, mode, providerId);
-  if (!config.configured) {
-    return {
-      content: fallback,
-      model: "fallback",
-      provider: "fallback",
-      providerName: config.name,
-      executionMode: mode,
-      taskKey: null,
-    };
-  }
-  const content = await requestOpenAICompatible(config, messages);
-  return {
-    content,
-    model: config.model,
-    provider: "api",
-    providerName: config.name,
-    executionMode: mode,
-    taskKey: null,
-  };
-}
-

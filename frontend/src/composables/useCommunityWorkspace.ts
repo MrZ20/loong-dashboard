@@ -1,18 +1,23 @@
-import { computed, ref } from "vue";
-import { api } from "../api/client";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { communityApi } from "../api/community";
+import { contentApi } from "../api/content";
 import { communityItemKey } from "../domain/community-item";
+import { normalizeDateRange } from "../domain/community-date-range";
 import {
-  sortCommunityItems,
-  type CommunitySortMode,
-} from "../domain/community-sorting";
+  COMMUNITY_PAGE_SIZE,
+  communityPageMeta,
+} from "../domain/community-pagination";
+import type { CommunitySortMode } from "../domain/community-sorting";
 import type {
   AppView,
-  CommunityItem,
   RepositoryId,
+} from "../types/core";
+import type {
+  CommunityItem,
   RepositoryMeta,
   TodaySummary,
   WatchlistMeta,
-} from "../types";
+} from "../types/community";
 
 const fallbackRepository: RepositoryMeta = {
   id: "vllm-ascend",
@@ -31,29 +36,36 @@ export function useCommunityWorkspace() {
   const searchQuery = ref("");
   const stateFilter = ref("全部状态");
   const sortMode = ref<CommunitySortMode>("updated");
+  const updatedFrom = ref("");
+  const updatedTo = ref("");
+  const currentPage = ref(1);
   const refreshing = ref(false);
   const listLoading = ref(false);
   const todayLoading = ref(false);
   const repositoryData = ref<RepositoryMeta[]>([]);
   const communityData = ref<CommunityItem[]>([]);
+  const communityTotal = ref(0);
+  const communityDomains = ref<Array<{
+    value: string;
+    label: string;
+    description: string;
+  }>>([]);
   const watchedKeys = ref<Set<string>>(new Set());
   const watchlistMeta = ref<Record<string, WatchlistMeta>>({});
+  const watchlistItems = ref<CommunityItem[]>([]);
   const documentCount = ref(0);
   const todaySummaries = ref<Record<string, TodaySummary>>({});
   const impactCount = ref(0);
   const insightCount = ref(0);
+  let factsPollTimer: ReturnType<typeof setTimeout> | null = null;
+  let communityLoadTimer: ReturnType<typeof setTimeout> | null = null;
+  let communityRequestId = 0;
 
   const currentRepo = computed(
     () =>
       repositoryData.value.find((repo) => repo.id === activeRepo.value) ??
       repositoryData.value[0] ??
       fallbackRepository,
-  );
-
-  const watchlistItems = computed(() =>
-    communityData.value.filter((item) =>
-      watchedKeys.value.has(communityItemKey(item)),
-    ),
   );
 
   const workspaceHeader = computed(() => {
@@ -109,33 +121,36 @@ export function useCommunityWorkspace() {
     return contexts[activeView.value] ?? null;
   });
 
-  const filteredItems = computed(() => {
-    const kind = activeView.value === "issues" ? "issue" : "pr";
-    const query = searchQuery.value.trim().toLowerCase();
-    const matchingItems = communityData.value.filter((item) => {
-      if (item.repo !== activeRepo.value || item.kind !== kind) return false;
-      const matchesDomain =
-        selectedDomain.value === "全部领域" ||
-        item.domain === selectedDomain.value;
-      const matchesState =
-        stateFilter.value === "全部状态" ||
-        (stateFilter.value === "开放中" && item.state === "open") ||
-        (stateFilter.value === "Draft" && item.state === "draft") ||
-        (stateFilter.value === "已合入" && item.state === "merged") ||
-        (stateFilter.value === "已关闭" && item.state === "closed") ||
-        (stateFilter.value === "重新打开" &&
-          item.lastEventType === "reopened");
-      const matchesQuery =
-        !query ||
-        item.title.toLowerCase().includes(query) ||
-        item.summary.toLowerCase().includes(query) ||
-        item.author.toLowerCase().includes(query) ||
-        String(item.id).includes(query);
+  const pagination = computed(() => communityPageMeta(
+    communityTotal.value,
+    currentPage.value,
+    communityData.value.length,
+  ));
+  const paginatedItems = computed(() => communityData.value);
 
-      return matchesDomain && matchesState && matchesQuery;
-    });
-    return sortCommunityItems(matchingItems, sortMode.value);
-  });
+  watch(
+    [
+      activeRepo,
+      activeView,
+      selectedDomain,
+      searchQuery,
+      stateFilter,
+      sortMode,
+      updatedFrom,
+      updatedTo,
+    ],
+    () => {
+      if (currentPage.value !== 1) {
+        currentPage.value = 1;
+      } else {
+        scheduleCommunityPageLoad();
+      }
+    },
+  );
+  watch(
+    currentPage,
+    () => scheduleCommunityPageLoad(),
+  );
 
   const activeKindLabel = computed(() =>
     activeView.value === "issues" ? "Issue" : "Pull Request",
@@ -143,75 +158,22 @@ export function useCommunityWorkspace() {
 
   const domainFilterOptions = computed(() => {
     const domains = [
-      "全部领域",
-      ...new Set(
-        communityData.value
-          .filter((item) => item.repo === activeRepo.value)
-          .map((item) => item.domain)
-          .filter(Boolean),
-      ),
-    ];
-    return domains.map((domain) => {
-    const details: Record<
-      string,
       {
-        description: string;
-        tone?: "accent" | "blue" | "neutral" | "purple";
-      }
-    > = {
-      全部领域: {
+        value: "全部领域",
+        label: "全部领域",
         description: "显示当前仓库的所有技术领域",
-        tone: "accent",
       },
-      "Engine & Model Runner": {
-        description: "模型执行、批处理与图模式",
-        tone: "blue",
-      },
-      "Worker & Graph": { description: "Ascend Worker、Model Runner 与图模式", tone: "blue" },
-      "FusedMoE & Expert Parallelism": {
-        description: "专家路由、融合算子与 MoE",
-        tone: "purple",
-      },
-      "FusedMoE & Custom Ops": { description: "Ascend MoE 与 NPU 自定义算子", tone: "purple" },
-      "Scheduler & KV Cache": { description: "上游调度与 KV Cache 生命周期" },
-      "Core Scheduler & KV Cache": { description: "Ascend Core、调度与 KV Cache" },
-      Attention: {
-        description: "Attention、MLA 与 KV 路径",
-        tone: "blue",
-      },
-      "CI / Infra": { description: "工作流、构建与基础设施" },
-      "Distributed & KV Transfer": { description: "并行通信、KV Connector 与 PD 解耦" },
-      Quantization: { description: "量化格式、精度与算子" },
-      "Serving & APIs": { description: "服务入口、协议与客户端" },
-      "Model Support & Weight Loading": { description: "模型实现、注册与权重加载" },
-      "Model Loading & Weight Transfer": { description: "Ascend 模型加载与在线权重更新" },
-      "Platform & Hardware": { description: "设备后端与硬件抽象" },
-      "Platform & Patches": { description: "Ascend 平台注册与兼容 patch" },
-      "Compilation & Kernels": { description: "编译、IR 与通用内核" },
-      Compilation: { description: "Ascend 编译与融合优化" },
-      "Speculative Decoding": { description: "MTP、EAGLE 与推测解码" },
-      "Sampling & Structured Output": { description: "采样、约束输出与解析" },
-      Sampling: { description: "Ascend 采样与 logits 处理" },
-      "Rust Frontend": { description: "Rust Server、CLI 与 Engine Client" },
-      EPLB: { description: "专家放置与动态负载均衡" },
-      "KV Offload": { description: "KV Cache 外部介质卸载" },
-      "Device & Memory": { description: "NPU 设备、内存与资源生命周期" },
-      XLite: { description: "XLite 独立执行后端" },
-      Documentation: { description: "文档、示例与开发指引" },
-      Tests: { description: "单元测试、集成与回归验证" },
-      Other: {
-        description: "尚未归入明确领域的改动",
-        tone: "neutral",
-      },
-    };
-
-    return {
-      value: domain,
-      label: domain,
-      description: details[domain]?.description,
-      tone: details[domain]?.tone ?? "neutral",
-    };
-    });
+      ...communityDomains.value,
+    ];
+    const tones = ["blue", "purple", "green", "orange"] as const;
+    return domains.map((domain, index) => ({
+      ...domain,
+      tone: domain.value === "全部领域"
+        ? "accent" as const
+        : domain.value === "Other"
+          ? "neutral" as const
+          : tones[(index - 1) % tones.length],
+    }));
   });
 
   const stateFilterOptions = computed(() => [
@@ -272,53 +234,185 @@ export function useCommunityWorkspace() {
     },
   ];
 
-  async function loadApplicationData() {
+  function isCommunityListView() {
+    return activeView.value === "pulls" || activeView.value === "issues";
+  }
+
+  function selectedStateQuery() {
+    const states = {
+      开放中: "open",
+      Draft: "draft",
+      已合入: "merged",
+      已关闭: "closed",
+      重新打开: "reopened",
+    } as const;
+    return states[stateFilter.value as keyof typeof states];
+  }
+
+  function communityPageQuery(repoId = activeRepo.value) {
+    const range = normalizeDateRange(updatedFrom.value, updatedTo.value);
+    return {
+      repo: repoId,
+      kind: activeView.value === "issues" ? "issue" as const : "pr" as const,
+      domain:
+        selectedDomain.value === "全部领域"
+          ? undefined
+          : selectedDomain.value,
+      state: selectedStateQuery(),
+      q: searchQuery.value.trim() || undefined,
+      from: range.from || undefined,
+      to: range.to || undefined,
+      sort: sortMode.value,
+      limit: COMMUNITY_PAGE_SIZE,
+      offset: (currentPage.value - 1) * COMMUNITY_PAGE_SIZE,
+    };
+  }
+
+  function applyCommunityPage(page: Awaited<ReturnType<typeof communityApi.communityPage>>) {
+    communityData.value = page.items;
+    communityTotal.value = page.total;
+    communityDomains.value = page.domainOptions;
+
+    if (
+      selectedDomain.value !== "全部领域" &&
+      !page.domainOptions.some((domain) => domain.value === selectedDomain.value)
+    ) {
+      selectedDomain.value = "全部领域";
+      return;
+    }
+
+    const refreshed = new Map(
+      page.items.map((item) => [communityItemKey(item), item]),
+    );
+    watchlistItems.value = watchlistItems.value.map(
+      (item) => refreshed.get(communityItemKey(item)) ?? item,
+    );
+  }
+
+  function upsertCommunityItem(item: CommunityItem) {
+    const key = communityItemKey(item);
+    communityData.value = communityData.value.map((candidate) =>
+      communityItemKey(candidate) === key ? item : candidate
+    );
+    watchlistItems.value = watchlistItems.value.map((candidate) =>
+      communityItemKey(candidate) === key ? item : candidate
+    );
+    if (
+      item.repo === activeRepo.value &&
+      item.domain &&
+      !communityDomains.value.some((option) => option.value === item.domain)
+    ) {
+      communityDomains.value = [
+        ...communityDomains.value,
+        {
+          value: item.domain,
+          label: item.domain,
+          description: "该领域来自当前仓库已同步的分类结果。",
+        },
+      ].sort((left, right) => left.label.localeCompare(right.label));
+    }
+  }
+
+  async function loadCommunityPage(
+    repoId = activeRepo.value,
+    requestId = ++communityRequestId,
+  ) {
+    if (!isCommunityListView() || repoId !== activeRepo.value) return;
     listLoading.value = true;
     try {
-      const [repos, items, watchItems, documents, insights, impacts] =
-        await Promise.all([
-          api.repositories(),
-          api.communityAll(),
-          api.watchlist(),
-          api.documents(),
-          api.analyses("insight", "all"),
-          api.impacts(),
-        ]);
-      repositoryData.value = repos;
-      communityData.value = items;
-      watchedKeys.value = new Set(
-        watchItems.map(({ item }) => communityItemKey(item)),
+      const page = await communityApi.communityPage(communityPageQuery(repoId));
+      if (requestId !== communityRequestId) return;
+      const totalPages = Math.max(
+        1,
+        Math.ceil(page.total / COMMUNITY_PAGE_SIZE),
       );
-      watchlistMeta.value = Object.fromEntries(
-        watchItems.map(({ item, watch }) => [communityItemKey(item), watch]),
-      );
-      documentCount.value = documents.length;
-      insightCount.value = insights.length;
-      impactCount.value = impacts.length;
-      const today = await Promise.all(repos.map((repo) => api.today(repo.id)));
-      todaySummaries.value = Object.fromEntries(
-        today.map((summary) => [summary.repo, summary]),
-      );
+      if (currentPage.value > totalPages) {
+        currentPage.value = totalPages;
+        return;
+      }
+      applyCommunityPage(page);
     } finally {
-      listLoading.value = false;
+      if (requestId === communityRequestId) listLoading.value = false;
     }
+  }
+
+  function scheduleCommunityPageLoad() {
+    if (communityLoadTimer) clearTimeout(communityLoadTimer);
+    const requestId = ++communityRequestId;
+    if (!isCommunityListView()) {
+      listLoading.value = false;
+      return;
+    }
+    listLoading.value = true;
+    communityLoadTimer = setTimeout(() => {
+      communityLoadTimer = null;
+      void loadCommunityPage(activeRepo.value, requestId).catch(() => undefined);
+    }, 180);
+  }
+
+  async function loadApplicationData() {
+    const [repos, , watchItems, documents, insights, impacts] =
+      await Promise.all([
+        communityApi.repositories(),
+        loadCommunityPage(),
+        communityApi.watchlist(),
+        contentApi.documents(),
+        contentApi.analyses("insight", "all"),
+        communityApi.impacts(),
+      ]);
+    repositoryData.value = repos;
+    watchedKeys.value = new Set(
+      watchItems.map(({ item }) => communityItemKey(item)),
+    );
+    watchlistItems.value = watchItems.map(({ item }) => item);
+    watchlistMeta.value = Object.fromEntries(
+      watchItems.map(({ item, watch }) => [communityItemKey(item), watch]),
+    );
+    documentCount.value = documents.length;
+    insightCount.value = insights.length;
+    impactCount.value = impacts.length;
+    const today = await Promise.all(repos.map((repo) => communityApi.today(repo.id)));
+    todaySummaries.value = Object.fromEntries(
+      today.map((summary) => [summary.repo, summary]),
+    );
+  }
+
+  async function reloadCommunitySnapshot(repoId: RepositoryId) {
+    const shouldReloadList = repoId === activeRepo.value && isCommunityListView();
+    const [repos, , today, impacts, watchItems] = await Promise.all([
+      communityApi.repositories(),
+      shouldReloadList
+        ? loadCommunityPage(repoId)
+        : Promise.resolve(),
+      communityApi.today(repoId),
+      communityApi.impacts(),
+      communityApi.watchlist(),
+    ]);
+    repositoryData.value = repos;
+    watchedKeys.value = new Set(
+      watchItems.map(({ item }) => communityItemKey(item)),
+    );
+    watchlistItems.value = watchItems.map(({ item }) => item);
+    watchlistMeta.value = Object.fromEntries(
+      watchItems.map(({ item, watch }) => [communityItemKey(item), watch]),
+    );
+    todaySummaries.value = { ...todaySummaries.value, [repoId]: today };
+    impactCount.value = impacts.length;
   }
 
   async function refreshData() {
     refreshing.value = true;
     todayLoading.value = true;
-    listLoading.value = ["pulls", "issues"].includes(activeView.value);
     try {
-      const syncResult = await api.refreshRepositoryTask(activeRepo.value, "facts");
-      const [repos, items, today, impacts, insights] = await Promise.all([
-        api.repositories(),
-        api.communityAll(),
-        api.today(activeRepo.value),
-        api.impacts(),
-        api.analyses("insight", "all"),
+      const syncResult = await communityApi.refreshRepositoryTask(activeRepo.value, "facts");
+      const [repos, , today, impacts, insights] = await Promise.all([
+        communityApi.repositories(),
+        loadCommunityPage(),
+        communityApi.today(activeRepo.value),
+        communityApi.impacts(),
+        contentApi.analyses("insight", "all"),
       ]);
       repositoryData.value = repos;
-      communityData.value = items;
       todaySummaries.value = {
         ...todaySummaries.value,
         [activeRepo.value]: today,
@@ -328,6 +422,10 @@ export function useCommunityWorkspace() {
       const refreshedRepository = repos.find(
         (repo) => repo.id === activeRepo.value,
       );
+      if (syncResult.run.status === "queued") {
+        scheduleFactsPoll(activeRepo.value);
+        return "社区事实刷新已进入后台队列；可以继续浏览，完成后列表与刷新状态会更新";
+      }
       return (
         `社区事实刷新完成：本次更新 ${Number(syncResult.run.pulls ?? 0)} 个 PR、${Number(syncResult.run.issues ?? 0)} 个 Issue；` +
         `当前列表共 ${refreshedRepository?.openPulls ?? 0} 个 PR、${refreshedRepository?.openIssues ?? 0} 个 Issue；未调用 AI 或重新分类`
@@ -335,17 +433,44 @@ export function useCommunityWorkspace() {
     } finally {
       refreshing.value = false;
       todayLoading.value = false;
-      listLoading.value = false;
     }
   }
+
+  function scheduleFactsPoll(repoId: RepositoryId) {
+    if (factsPollTimer) clearTimeout(factsPollTimer);
+    factsPollTimer = setTimeout(async () => {
+      try {
+        const repos = await communityApi.repositories();
+        repositoryData.value = repos;
+        const facts = repos
+          .find((repo) => repo.id === repoId)
+          ?.refreshTasks?.find((task) => task.taskType === "facts");
+        if (facts && ["queued", "running"].includes(facts.status)) {
+          scheduleFactsPoll(repoId);
+          return;
+        }
+        await reloadCommunitySnapshot(repoId);
+      } catch {
+        scheduleFactsPoll(repoId);
+      }
+    }, 2_500);
+  }
+
+  onBeforeUnmount(() => {
+    if (factsPollTimer) clearTimeout(factsPollTimer);
+    if (communityLoadTimer) clearTimeout(communityLoadTimer);
+  });
 
   async function toggleWatch(item: CommunityItem) {
     const key = communityItemKey(item);
     const next = new Set(watchedKeys.value);
     const removing = next.has(key);
     if (removing) {
-      await api.removeWatch(key);
+      await communityApi.removeWatch(key);
       next.delete(key);
+      watchlistItems.value = watchlistItems.value.filter(
+        (candidate) => communityItemKey(candidate) !== key,
+      );
       const nextMeta = { ...watchlistMeta.value };
       delete nextMeta[key];
       watchlistMeta.value = nextMeta;
@@ -356,8 +481,11 @@ export function useCommunityWorkspace() {
         priority: "P2",
         nextCheck: "明天",
       };
-      await api.addWatch(key, meta);
+      await communityApi.addWatch(key, meta);
       next.add(key);
+      if (!watchlistItems.value.some((candidate) => communityItemKey(candidate) === key)) {
+        watchlistItems.value = [...watchlistItems.value, item];
+      }
       watchlistMeta.value = { ...watchlistMeta.value, [key]: meta };
     }
     watchedKeys.value = next;
@@ -368,12 +496,17 @@ export function useCommunityWorkspace() {
     selectedDomain.value = "全部领域";
     stateFilter.value = "全部状态";
     searchQuery.value = "";
+    updatedFrom.value = "";
+    updatedTo.value = "";
   }
 
   function clearUserData() {
     communityData.value = [];
+    communityTotal.value = 0;
+    communityDomains.value = [];
     watchedKeys.value = new Set();
     watchlistMeta.value = {};
+    watchlistItems.value = [];
   }
 
   return {
@@ -383,16 +516,21 @@ export function useCommunityWorkspace() {
     clearFilters,
     clearUserData,
     communityData,
+    communityTotal,
+    currentPage,
     currentRepo,
     documentCount,
     domainFilterOptions,
-    filteredItems,
     impactCount,
     insightCount,
     listLoading,
     loadApplicationData,
+    paginatedItems,
+    pagination,
+    pageSize: COMMUNITY_PAGE_SIZE,
     refreshData,
     refreshing,
+    reloadCommunitySnapshot,
     repositoryData,
     searchQuery,
     selectedDomain,
@@ -403,6 +541,9 @@ export function useCommunityWorkspace() {
     todayLoading,
     todaySummaries,
     toggleWatch,
+    upsertCommunityItem,
+    updatedFrom,
+    updatedTo,
     watchedKeys,
     watchlistMeta,
     watchlistItems,

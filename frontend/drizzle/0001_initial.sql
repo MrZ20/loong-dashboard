@@ -129,17 +129,6 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   FOREIGN KEY(thread_id) REFERENCES chat_threads(id)
 );
 
-CREATE TABLE IF NOT EXISTS sync_runs (
-  id TEXT PRIMARY KEY,
-  repo_id TEXT NOT NULL,
-  status TEXT NOT NULL,
-  item_count INTEGER NOT NULL DEFAULT 0,
-  error TEXT,
-  started_at TEXT NOT NULL,
-  finished_at TEXT,
-  FOREIGN KEY(repo_id) REFERENCES repositories(id)
-);
-
 CREATE INDEX IF NOT EXISTS community_repo_kind_updated_idx
   ON community_items(repo_id, kind, updated_at DESC);
 CREATE INDEX IF NOT EXISTS community_domain_updated_idx

@@ -1,4 +1,5 @@
-import { parseJson, type WorkerEnv } from "../db";
+import type { WorkerEnv } from "../db";
+import { parseJson } from "../mappers/database-row";
 import { LOCAL_EVENT_TYPES } from "../domain/local-analysis";
 import { cleanText, HttpError, json, readJson, requireMethod } from "../http";
 import {
@@ -9,7 +10,7 @@ import {
   markLocalAnalysisJobRunning,
   upsertLocalRunnerHeartbeat,
 } from "../repositories/local-runner";
-import { completeRunnerJob } from "../services/local-analysis";
+import { completeRunnerJob } from "../services/local-runtime/completion";
 
 function requireRunner(request: Request, env: WorkerEnv) {
   if (!env.LOCAL_RUNNER_TOKEN) {
@@ -60,13 +61,17 @@ export async function handleLocalRunner(
       userId: cleanText(body.userId, 120),
       status: cleanText(body.status, 40) || "online",
       version: cleanText(body.version, 40),
-      opencodeVersion: cleanText(body.opencodeVersion, 40),
+      engineVersions: body.engineVersions && typeof body.engineVersions === "object"
+        ? body.engineVersions
+        : {},
       authConfigured: body.authConfigured === true,
       readonlyVerified: body.readonlyVerified === true,
       repositories: body.repositories && typeof body.repositories === "object"
         ? body.repositories
         : {},
-      providers: Array.isArray(body.providers) ? body.providers.slice(0, 100) : [],
+      engineCatalogs: body.engineCatalogs && typeof body.engineCatalogs === "object"
+        ? body.engineCatalogs
+        : {},
       capabilities: body.capabilities && typeof body.capabilities === "object"
         ? body.capabilities
         : {},
@@ -107,7 +112,8 @@ export async function handleLocalRunner(
             targetRef: job.target_ref,
             providerId: job.provider_id,
             modelId: job.model_id,
-            opencodeSessionId: job.opencode_session_id ?? null,
+            engineId: job.engine_id,
+            agentSessionId: job.agent_session_id ?? null,
             request: parseJson(job.request_json, {}),
           }
         : null,

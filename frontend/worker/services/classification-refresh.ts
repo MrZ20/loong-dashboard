@@ -1,5 +1,6 @@
 import { executeResolvedAITask } from "./ai-execution";
-import { parseJson, type WorkerEnv } from "../db";
+import type { WorkerEnv } from "../db";
+import { parseJson } from "../mappers/database-row";
 import { classifyDomain } from "../domain/classification/classifier";
 import { buildClassificationSystemPrompt } from "../domain/classification/prompt-builder";
 import type {
@@ -16,9 +17,9 @@ import {
   markClassificationRunning,
 } from "../repositories/classifications";
 import { getEffectiveClassificationTaxonomy } from "./classification-taxonomies";
-import { resolveAITask } from "./ai-task-settings";
+import { resolveAITask, type ResolvedAITask } from "./ai-task-settings";
 import type { ResolvedPrompt } from "./prompt-resolution";
-import { enqueueManagedAITask } from "./local-analysis";
+import { enqueueManagedAITask } from "./local-runtime/enqueue";
 
 function classificationPromptFeature(repoId: string): PromptFeatureKey {
   return repoId === "vllm-ascend" ? "vllm_ascend_classification" : "vllm_classification";
@@ -65,18 +66,15 @@ async function supplementLowConfidenceClassification(
     files: Array<{ path: string; additions?: number; deletions?: number }>;
     labels: string[];
     ruleAssessment: DomainAssessment;
+    resolveTask: () => Promise<ResolvedAITask>;
   },
 ) {
   if (input.ruleAssessment.confidenceLabel !== "low") {
     return { assessment: input.ruleAssessment, prompt: null, error: "", queued: false };
   }
-  const task = await resolveAITask(
-    env,
-    input.userId,
-    aiTaskKeyForFeature(classificationPromptFeature(input.repoId), input.repoId),
-  );
+  const task = await input.resolveTask();
   const prompt = task.prompt;
-  if (task.executionMode === "opencode") {
+  if (task.executionMode !== "api") {
     await enqueueManagedAITask(env, {
       userId: input.userId,
       taskKey: task.key,
@@ -106,7 +104,7 @@ async function supplementLowConfidenceClassification(
     return {
       assessment: input.ruleAssessment,
       prompt,
-      error: "OpenCode 低置信度补判已排队",
+      error: "本地 Agent 低置信度补判已排队",
       queued: true,
     };
   }
@@ -182,6 +180,11 @@ export async function refreshCommunityClassifications(
     maxItems: number;
     itemId?: string | null;
     forceManual?: boolean;
+    onProgress?: (progress: {
+      stage: string;
+      current: number;
+      total: number;
+    }) => Promise<void> | void;
   },
 ) {
   const automaticPredicate = input.refreshRule === "first_only"
@@ -207,66 +210,110 @@ export async function refreshCommunityClassifications(
     input.userId,
     input.repoId,
   );
+  let resolvedTask: Promise<ResolvedAITask> | null = null;
+  const resolveClassificationTask = () => {
+    resolvedTask ??= resolveAITask(
+      env,
+      input.userId,
+      aiTaskKeyForFeature(
+        classificationPromptFeature(input.repoId),
+        input.repoId,
+      ),
+    );
+    return resolvedTask;
+  };
   let classified = 0;
-  for (const row of rows) {
-    const shouldRun = input.forceManual || shouldAutoClassify(input.refreshRule, {
-      missing: row.classification_status === "missing",
-      codeChanged: row.kind === "pr" && (
-        (row.classification_head_sha ?? "") !== (row.head_sha ?? "") ||
-        row.classification_files_hash !== row.files_hash
-      ),
-      updatedAtChanged: row.classification_status === "possibly_stale" && (
-        !row.classification_generated_at || !row.any_changed_at ||
-        row.any_changed_at > row.classification_generated_at
-      ),
-      locked: Boolean(row.classification_locked),
-    });
-    if (!shouldRun) continue;
-    const diff = parseJson<Record<string, any>>(row.diff_json, {});
-    const files = Array.isArray(diff.entries) ? diff.entries : [];
-    const labels = parseJson<string[]>(row.labels_json, []);
-    const linkedDomains = row.kind === "issue"
-      ? await findLinkedPullDomains(env, input.repoId, String(row.body_md ?? ""))
-      : [];
-    const ruleAssessment = classifyDomain({
-      repoId: input.repoId,
-      kind: row.kind,
-      title: row.title,
-      body: row.body_md,
-      files,
-      labels,
-      linkedDomains,
-      taxonomy,
-    });
-    const supplemented = await supplementLowConfidenceClassification(env, {
-      userId: input.userId,
-      repoId: input.repoId,
-      taxonomy,
-      row,
-      files,
-      labels,
-      ruleAssessment,
-    });
-    const assessment = supplemented.assessment;
-    const now = new Date().toISOString();
-    await saveClassificationResult(env, {
-      itemId: row.id,
-      domain: assessment.domain,
-      source: assessment.source,
-      confidence: assessment.confidence,
-      assessment,
-      headSha: row.head_sha ?? null,
-      bodyHash: row.body_hash,
-      filesHash: row.files_hash,
-      generatedAt: now,
-      details: classificationDetails(
+  let processed = 0;
+  await input.onProgress?.({
+    stage: "classifying",
+    current: 0,
+    total: rows.length,
+  });
+
+  let cursor = 0;
+  const classifyNext = async () => {
+    while (cursor < rows.length) {
+      const row = rows[cursor];
+      cursor += 1;
+      const shouldRun = input.forceManual || shouldAutoClassify(input.refreshRule, {
+        missing: row.classification_status === "missing",
+        codeChanged: row.kind === "pr" && (
+          (row.classification_head_sha ?? "") !== (row.head_sha ?? "") ||
+          row.classification_files_hash !== row.files_hash
+        ),
+        updatedAtChanged: row.classification_status === "possibly_stale" && (
+          !row.classification_generated_at || !row.any_changed_at ||
+          row.any_changed_at > row.classification_generated_at
+        ),
+        locked: Boolean(row.classification_locked),
+      });
+      if (!shouldRun) {
+        processed += 1;
+        await input.onProgress?.({
+          stage: "classifying",
+          current: processed,
+          total: rows.length,
+        });
+        continue;
+      }
+      const diff = parseJson<Record<string, any>>(row.diff_json, {});
+      const files = Array.isArray(diff.entries) ? diff.entries : [];
+      const labels = parseJson<string[]>(row.labels_json, []);
+      const linkedDomains = row.kind === "issue"
+        ? await findLinkedPullDomains(env, input.repoId, String(row.body_md ?? ""))
+        : [];
+      const ruleAssessment = classifyDomain({
+        repoId: input.repoId,
+        kind: row.kind,
+        title: row.title,
+        body: row.body_md,
+        files,
+        labels,
+        linkedDomains,
+        taxonomy,
+      });
+      const supplemented = await supplementLowConfidenceClassification(env, {
+        userId: input.userId,
+        repoId: input.repoId,
+        taxonomy,
+        row,
+        files,
+        labels,
+        ruleAssessment,
+        resolveTask: resolveClassificationTask,
+      });
+      const assessment = supplemented.assessment;
+      const now = new Date().toISOString();
+      await saveClassificationResult(env, {
+        itemId: row.id,
+        domain: assessment.domain,
+        source: assessment.source,
+        confidence: assessment.confidence,
         assessment,
-        supplemented.prompt,
-        supplemented.error,
-      ),
-    });
-    if (supplemented.queued) await markClassificationRunning(env, row.id);
-    classified += 1;
-  }
+        headSha: row.head_sha ?? null,
+        bodyHash: row.body_hash,
+        filesHash: row.files_hash,
+        generatedAt: now,
+        details: classificationDetails(
+          assessment,
+          supplemented.prompt,
+          supplemented.error,
+        ),
+      });
+      if (supplemented.queued) await markClassificationRunning(env, row.id);
+      classified += 1;
+      processed += 1;
+      await input.onProgress?.({
+        stage: supplemented.queued ? "classification_ai_queued" : "classifying",
+        current: processed,
+        total: rows.length,
+      });
+    }
+  };
+
+  const concurrency = input.itemId ? 1 : Math.min(6, rows.length);
+  await Promise.all(
+    Array.from({ length: concurrency }, () => classifyNext()),
+  );
   return { itemCount: classified, classified };
 }

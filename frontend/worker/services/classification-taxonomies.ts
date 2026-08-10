@@ -1,5 +1,6 @@
 import { executeResolvedAITask } from "./ai-execution";
-import { parseJson, type WorkerEnv } from "../db";
+import type { WorkerEnv } from "../db";
+import { parseJson } from "../mappers/database-row";
 import { buildClassificationSystemPrompt } from "../domain/classification/prompt-builder";
 import {
   applyTaxonomyOverlay,
@@ -22,7 +23,9 @@ import {
   saveClassificationTaxonomyOverride,
 } from "../repositories/classification-taxonomies";
 import { resolveAITask } from "./ai-task-settings";
-import { enqueueManagedAITask } from "./local-analysis";
+import { enqueueManagedAITask } from "./local-runtime/enqueue";
+import { findActiveLocalAnalysisJob } from "../repositories/local-runner";
+import { mapLocalJob } from "./local-runtime/mappers";
 
 function promptFeature(repoId: string): PromptFeatureKey {
   return repoId === "vllm-ascend" ? "vllm_ascend_taxonomy_refresh" : "vllm_taxonomy_refresh";
@@ -89,6 +92,15 @@ export async function refreshClassificationTaxonomy(
   );
   const prompt = task.prompt;
   const now = new Date().toISOString();
+  if (task.executionMode !== "api") {
+    const activeJob = await findActiveLocalAnalysisJob(env, {
+      userId,
+      jobType: "managed_ai_task",
+      subjectKind: "taxonomy",
+      repoScope: repoId,
+    });
+    if (activeJob) return { job: mapLocalJob(activeJob), taxonomy: null };
+  }
   await markClassificationTaxonomyRunning(env, { userId, repoId, baseVersion: taxonomy.version, now });
   try {
     const samples = await listClassificationTaxonomySamples(env, repoId, 80);
@@ -98,7 +110,7 @@ export async function refreshClassificationTaxonomy(
       files: parseJson<Record<string, any>>(row.diff_json, {}).entries ?? [],
       currentDomain: row.domain, confidence: row.domain_confidence,
     }));
-    if (task.executionMode === "opencode") {
+    if (task.executionMode !== "api") {
       const job = await enqueueManagedAITask(env, {
         userId,
         taskKey: task.key,
@@ -107,6 +119,10 @@ export async function refreshClassificationTaxonomy(
         subjectKey: `${repoId}:${now}`,
         repoScope: repoId,
         request: {
+          workspaceMode: "none",
+          updatePolicy: "none",
+          permissionProfileId: "safe_readonly",
+          evidenceOnly: true,
           repoId,
           baseVersion: getRepositoryTaxonomy(repoId).version,
           taxonomy: taxonomy.domains.map((domain) => ({

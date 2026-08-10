@@ -1,14 +1,17 @@
 import { first, query, run, type WorkerEnv } from "../db";
-import type { LocalJobType } from "../domain/local-analysis";
+import type {
+  LocalAgentEngine,
+  LocalJobType,
+} from "../domain/local-analysis";
 
 export async function ensureLocalRunnerSettings(env: WorkerEnv, userId: string) {
   const now = new Date().toISOString();
   await run(
     env,
     `INSERT INTO local_runner_settings(
-      user_id, enabled, default_provider, default_model, max_concurrency,
+      user_id, enabled, max_concurrency,
       worktree_retention_hours, auto_fetch, timeout_seconds, created_at, updated_at
-    ) VALUES(?, 0, '', '', 1, 24, 1, 900, ?, ?)
+    ) VALUES(?, 0, 1, 24, 1, 900, ?, ?)
     ON CONFLICT(user_id) DO NOTHING`,
     [userId, now, now],
   );
@@ -24,8 +27,6 @@ export async function updateLocalRunnerSettings(
   input: {
     userId: string;
     enabled: boolean;
-    defaultProvider: string;
-    defaultModel: string;
     maxConcurrency: number;
     worktreeRetentionHours: number;
     autoFetch: boolean;
@@ -35,13 +36,10 @@ export async function updateLocalRunnerSettings(
   await ensureLocalRunnerSettings(env, input.userId);
   await run(
     env,
-    `UPDATE local_runner_settings SET enabled = ?, default_provider = ?,
-      default_model = ?, max_concurrency = ?, worktree_retention_hours = ?,
+    `UPDATE local_runner_settings SET enabled = ?, max_concurrency = ?, worktree_retention_hours = ?,
       auto_fetch = ?, timeout_seconds = ?, updated_at = ? WHERE user_id = ?`,
     [
       input.enabled ? 1 : 0,
-      input.defaultProvider,
-      input.defaultModel,
       input.maxConcurrency,
       input.worktreeRetentionHours,
       input.autoFetch ? 1 : 0,
@@ -76,11 +74,11 @@ export async function upsertLocalRunnerHeartbeat(
     userId: string;
     status: string;
     version: string;
-    opencodeVersion: string;
+    engineVersions: unknown;
     authConfigured: boolean;
     readonlyVerified: boolean;
     repositories: unknown;
-    providers: unknown;
+    engineCatalogs: unknown;
     capabilities: unknown;
     activeJobs: number;
     lastError: string | null;
@@ -90,17 +88,17 @@ export async function upsertLocalRunnerHeartbeat(
   await run(
     env,
     `INSERT INTO local_runners(
-      id, user_id, status, version, opencode_version, auth_configured,
-      readonly_verified, repositories_json, providers_json, capabilities_json,
+      id, user_id, status, version, engine_versions_json, auth_configured,
+      readonly_verified, repositories_json, engine_catalogs_json, capabilities_json,
       active_jobs, last_seen_at, last_error, created_at, updated_at
     ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       user_id = excluded.user_id, status = excluded.status,
-      version = excluded.version, opencode_version = excluded.opencode_version,
+      version = excluded.version, engine_versions_json = excluded.engine_versions_json,
       auth_configured = excluded.auth_configured,
       readonly_verified = excluded.readonly_verified,
       repositories_json = excluded.repositories_json,
-      providers_json = excluded.providers_json,
+      engine_catalogs_json = excluded.engine_catalogs_json,
       capabilities_json = excluded.capabilities_json,
       active_jobs = excluded.active_jobs, last_seen_at = excluded.last_seen_at,
       last_error = excluded.last_error, updated_at = excluded.updated_at`,
@@ -109,11 +107,11 @@ export async function upsertLocalRunnerHeartbeat(
       input.userId,
       input.status,
       input.version,
-      input.opencodeVersion,
+      JSON.stringify(input.engineVersions),
       input.authConfigured ? 1 : 0,
       input.readonlyVerified ? 1 : 0,
       JSON.stringify(input.repositories),
-      JSON.stringify(input.providers),
+      JSON.stringify(input.engineCatalogs),
       JSON.stringify(input.capabilities),
       input.activeJobs,
       now,
@@ -131,6 +129,7 @@ export async function enqueueLocalAnalysisJob(
     id: string;
     userId: string;
     jobType: LocalJobType;
+    engineId: LocalAgentEngine | "";
     subjectKind?: string;
     subjectKey?: string;
     repoScope?: string;
@@ -142,7 +141,7 @@ export async function enqueueLocalAnalysisJob(
     targetRef?: string;
     providerId?: string;
     modelId?: string;
-    opencodeSessionId?: string | null;
+    agentSessionId?: string | null;
     priority?: number;
     request: unknown;
     createdAt?: string;
@@ -154,9 +153,10 @@ export async function enqueueLocalAnalysisJob(
     `INSERT INTO local_analysis_jobs(
       id, user_id, job_type, subject_kind, subject_key, repo_scope,
       item_id, chat_thread_id, session_scope, base_sha, head_sha, target_ref,
-      provider_id, model_id, opencode_session_id, status, priority,
+      provider_id, model_id, engine_id, agent_session_id,
+      status, priority,
       request_json, created_at, updated_at
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
     [
       input.id,
       input.userId,
@@ -172,7 +172,8 @@ export async function enqueueLocalAnalysisJob(
       input.targetRef || "",
       input.providerId || "",
       input.modelId || "",
-      input.opencodeSessionId ?? null,
+      input.engineId,
+      input.agentSessionId ?? null,
       input.priority ?? 50,
       JSON.stringify(input.request),
       now,
@@ -199,6 +200,25 @@ export function findUserLocalAnalysisJob(
     env,
     "SELECT * FROM local_analysis_jobs WHERE id = ? AND user_id = ?",
     [jobId, userId],
+  );
+}
+
+export function findActiveLocalAnalysisJob(
+  env: WorkerEnv,
+  input: {
+    userId: string;
+    jobType: LocalJobType;
+    subjectKind: string;
+    repoScope: string;
+  },
+) {
+  return first<Record<string, any>>(
+    env,
+    `SELECT * FROM local_analysis_jobs
+     WHERE user_id = ? AND job_type = ? AND subject_kind = ? AND repo_scope = ?
+       AND status IN ('queued', 'running', 'cancel_requested')
+     ORDER BY created_at ASC LIMIT 1`,
+    [input.userId, input.jobType, input.subjectKind, input.repoScope],
   );
 }
 
@@ -317,7 +337,7 @@ export function completeLocalAnalysisJobRow(
     status: "completed" | "failed" | "cancelled";
     result: unknown;
     error: string | null;
-    opencodeSessionId?: string | null;
+    agentSessionId?: string | null;
     localEvidence: boolean;
     analysisDocumentId?: string | null;
   },
@@ -326,7 +346,7 @@ export function completeLocalAnalysisJobRow(
   return run(
     env,
     `UPDATE local_analysis_jobs SET status = ?, result_json = ?, error = ?,
-      opencode_session_id = COALESCE(?, opencode_session_id),
+      agent_session_id = COALESCE(?, agent_session_id),
       local_evidence = ?, analysis_document_id = COALESCE(?, analysis_document_id),
       request_json = '{}', finished_at = ?, updated_at = ?
      WHERE id = ? AND runner_id = ?
@@ -335,7 +355,7 @@ export function completeLocalAnalysisJobRow(
       input.status,
       JSON.stringify(input.result),
       input.error,
-      input.opencodeSessionId ?? null,
+      input.agentSessionId ?? null,
       input.localEvidence ? 1 : 0,
       input.analysisDocumentId ?? null,
       now,
@@ -351,12 +371,13 @@ export function findSessionBinding(
   userId: string,
   sessionScope: string,
   commitSha: string,
+  engineId: LocalAgentEngine,
 ) {
   return first<Record<string, any>>(
     env,
-    `SELECT * FROM opencode_session_bindings
-     WHERE user_id = ? AND session_scope = ? AND commit_sha = ?`,
-    [userId, sessionScope, commitSha],
+    `SELECT * FROM engine_session_bindings
+     WHERE user_id = ? AND session_scope = ? AND commit_sha = ? AND engine_id = ?`,
+    [userId, sessionScope, commitSha, engineId],
   );
 }
 
@@ -364,17 +385,19 @@ export function latestSessionBinding(
   env: WorkerEnv,
   userId: string,
   sessionScope: string,
+  engineId?: LocalAgentEngine,
 ) {
   return first<Record<string, any>>(
     env,
-    `SELECT * FROM opencode_session_bindings
+    `SELECT * FROM engine_session_bindings
      WHERE user_id = ? AND session_scope = ?
+       AND (? = '' OR engine_id = ?)
      ORDER BY updated_at DESC LIMIT 1`,
-    [userId, sessionScope],
+    [userId, sessionScope, engineId || "", engineId || ""],
   );
 }
 
-export function upsertSessionBinding(
+export async function upsertSessionBinding(
   env: WorkerEnv,
   input: {
     id: string;
@@ -382,7 +405,8 @@ export function upsertSessionBinding(
     sessionScope: string;
     repoScope: string;
     commitSha: string;
-    opencodeSessionId: string;
+    agentSessionId: string;
+    engineId: LocalAgentEngine;
     runnerId: string;
     providerId: string;
     modelId: string;
@@ -395,13 +419,13 @@ export function upsertSessionBinding(
   const now = new Date().toISOString();
   return run(
     env,
-    `INSERT INTO opencode_session_bindings(
-      id, user_id, session_scope, repo_scope, commit_sha, opencode_session_id,
+    `INSERT INTO engine_session_bindings(
+      id, user_id, session_scope, repo_scope, commit_sha, engine_id, agent_session_id,
       runner_id, provider_id, model_id, summary_md, confirmed_facts_json,
       unresolved_json, focus_json, worktree_state, created_at, updated_at
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'rebuildable', ?, ?)
-    ON CONFLICT(user_id, session_scope, commit_sha) DO UPDATE SET
-      opencode_session_id = excluded.opencode_session_id,
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'rebuildable', ?, ?)
+    ON CONFLICT(user_id, session_scope, commit_sha, engine_id) DO UPDATE SET
+      agent_session_id = excluded.agent_session_id,
       runner_id = excluded.runner_id, provider_id = excluded.provider_id,
       model_id = excluded.model_id, summary_md = excluded.summary_md,
       confirmed_facts_json = excluded.confirmed_facts_json,
@@ -413,7 +437,8 @@ export function upsertSessionBinding(
       input.sessionScope,
       input.repoScope,
       input.commitSha,
-      input.opencodeSessionId,
+      input.engineId,
+      input.agentSessionId,
       input.runnerId,
       input.providerId,
       input.modelId,
@@ -436,7 +461,7 @@ export function updateThreadLocalAnalysisState(
     targetRef: string;
     providerId: string;
     modelId: string;
-    sessionId?: string | null;
+    agentSessionId?: string | null;
     commitSha?: string;
     runnerJobId?: string | null;
     localEvidence?: boolean;
@@ -446,8 +471,8 @@ export function updateThreadLocalAnalysisState(
     env,
     `UPDATE chat_threads SET mode = ?, repo_scope = ?, target_ref = ?,
       provider_id = ?, model_id = ?,
-      opencode_session_id = COALESCE(?, opencode_session_id),
-      opencode_commit_sha = COALESCE(?, opencode_commit_sha),
+      agent_session_id = COALESCE(?, agent_session_id),
+      agent_commit_sha = COALESCE(?, agent_commit_sha),
       runner_job_id = ?, local_evidence = ?, updated_at = ? WHERE id = ?`,
     [
       input.mode,
@@ -455,7 +480,7 @@ export function updateThreadLocalAnalysisState(
       input.targetRef,
       input.providerId,
       input.modelId,
-      input.sessionId ?? null,
+      input.agentSessionId ?? null,
       input.commitSha ?? null,
       input.runnerJobId ?? null,
       input.localEvidence ? 1 : 0,
@@ -490,7 +515,7 @@ export async function createLocalAnalysisDocumentRow(
     userId: string;
     codeReferences: unknown;
     evidenceCompleteness: "complete" | "partial" | "insufficient";
-    opencodeSessionId: string | null;
+    agentSessionId: string | null;
     runnerJobId: string;
     localEvidence: boolean;
     createdAt: string;
@@ -503,10 +528,10 @@ export async function createLocalAnalysisDocumentRow(
       prompt_template_id, prompt_template_name, prompt_revision, model, status,
       base_sha, head_sha, body_hash, files_hash, prompt_type, prompt_version,
       runner, provider, version_status, created_by, source_refs_json,
-      analysis_source, evidence_completeness, opencode_session_id, runner_job_id,
+      analysis_source, evidence_completeness, agent_session_id, runner_job_id,
       code_references_json, local_evidence, created_at, updated_at
     ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?,
-      'opencode', ?, ?, ?, ?, 'ai', ?, ?, ?, ?, ?, ?, ?)`,
+      ?, ?, ?, ?, ?, 'ai', ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.id,
       input.type,
@@ -525,12 +550,13 @@ export async function createLocalAnalysisDocumentRow(
       input.filesHash,
       input.promptType,
       input.promptVersion,
+      "local-agent",
       input.provider,
       input.versionStatus,
       input.userId,
       JSON.stringify(input.codeReferences),
       input.evidenceCompleteness,
-      input.opencodeSessionId,
+      input.agentSessionId,
       input.runnerJobId,
       JSON.stringify(input.codeReferences),
       input.localEvidence ? 1 : 0,

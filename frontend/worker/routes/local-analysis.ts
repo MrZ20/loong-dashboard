@@ -13,7 +13,7 @@ import {
   localRunnerSettingsState,
   mapLocalEvent,
   mapLocalJob,
-} from "../services/local-analysis";
+} from "../services/local-runtime/enqueue";
 
 function pathMatch(pathname: string, pattern: RegExp) {
   const match = pathname.match(pattern);
@@ -35,8 +35,6 @@ export async function handleLocalAnalysis(
     await updateLocalRunnerSettings(env, {
       userId: user.id,
       enabled: body.enabled === true,
-      defaultProvider: cleanText(body.defaultProvider, 200),
-      defaultModel: cleanText(body.defaultModel, 300),
       maxConcurrency: Math.max(1, Math.min(Number(body.maxConcurrency ?? 1), 8)),
       worktreeRetentionHours: Math.max(1, Math.min(Number(body.worktreeRetentionHours ?? 24), 720)),
       autoFetch: body.autoFetch !== false,

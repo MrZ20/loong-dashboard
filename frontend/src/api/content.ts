@@ -1,9 +1,5 @@
-import type {
-  AnalysisDocument,
-  DomainMapApi,
-  LocalAnalysisJob,
-  TechnicalDocument,
-} from "../types";
+import type { AnalysisDocument, LocalAnalysisJob } from "../types/analysis";
+import type { DomainMapApi, TechnicalDocument } from "../types/content";
 import { apiFetch } from "./core";
 
 export const contentApi = {
@@ -72,6 +68,11 @@ export const contentApi = {
     apiFetch<{
       draft?: { contentMd: string; summary: string };
       provider?: string;
+      providerName?: string;
+      model?: string;
+      promptTemplateName?: string;
+      promptVersion?: string;
+      promptRevision?: number;
       job?: LocalAnalysisJob;
     }>("/api/documents/generate", {
       method: "POST",

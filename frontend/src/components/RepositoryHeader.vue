@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { RefreshTaskType, RepositoryMeta, ThemeMode } from "../types";
+import type { ThemeMode } from "../types/core";
+import type { RepositoryMeta } from "../types/community";
+import type { RefreshTaskType } from "../types/refresh";
 import Octicon from "./Octicon.vue";
 
 const props = defineProps<{
@@ -40,11 +42,27 @@ function task(type: RefreshTaskType) {
   return props.repo.refreshTasks?.find((candidate) => candidate.taskType === type);
 }
 
+const factsTask = computed(() => task("facts"));
+const factsBusy = computed(() =>
+  ["queued", "running"].includes(factsTask.value?.status ?? ""),
+);
+const factsRunning = computed(() => factsTask.value?.status === "running");
+
+function progressLabel() {
+  const current = factsTask.value?.progressCurrent ?? 0;
+  const total = factsTask.value?.progressTotal ?? 0;
+  if (factsTask.value?.status === "queued") return "等待后台执行";
+  if (!total) return "正在发现更新";
+  return `正在处理 ${current}/${total}`;
+}
+
 const refreshBriefs = computed(() => [
   {
     type: "facts",
     label: "社区事实",
-    value: `${relativeRefreshTime(task("facts")?.lastSuccessfulAt)}更新`,
+    value: factsBusy.value
+      ? progressLabel()
+      : `${relativeRefreshTime(task("facts")?.lastSuccessfulAt)}更新`,
   },
   {
     type: "summary",
@@ -108,9 +126,9 @@ const emit = defineEmits<{
           <span class="status-dot" />
           {{ syncedLabel }}
         </span>
-        <button class="button button--secondary" :disabled="refreshing" @click="emit('refresh')">
-          <Octicon name="sync" :size="15" :class="{ spinning: refreshing }" />
-          {{ refreshing ? "刷新中" : "刷新社区事实" }}
+        <button class="button button--secondary" :disabled="refreshing || factsRunning" @click="emit('refresh')">
+          <Octicon name="sync" :size="15" :class="{ spinning: refreshing || factsTask?.status === 'running' }" />
+          {{ factsTask?.status === 'queued' ? '继续队列任务' : factsTask?.status === 'running' ? '刷新中' : refreshing ? "提交中" : "刷新社区事实" }}
         </button>
       </div>
     </div>

@@ -3,7 +3,6 @@ CREATE TABLE IF NOT EXISTS user_profiles (
   role TEXT NOT NULL DEFAULT '',
   organization TEXT NOT NULL DEFAULT '',
   bio TEXT NOT NULL DEFAULT '',
-  active_ai_provider_id TEXT NOT NULL DEFAULT 'environment',
   updated_at TEXT NOT NULL,
   FOREIGN KEY(user_id) REFERENCES users(id)
 );

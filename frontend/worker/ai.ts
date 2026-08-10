@@ -12,9 +12,7 @@ import {
   validateIssueSummaryOutput,
   validatePrSummaryOutput,
 } from "./domain/analysis-quality";
-import type { AIMessage } from "./integrations/ai/openai-compatible";
 import {
-  executeLegacyActiveProvider,
   executeResolvedAITask,
   type ManagedAIResult,
 } from "./services/ai-execution";
@@ -25,18 +23,6 @@ export type AIResult = ManagedAIResult;
 
 export interface PromptedAIResult extends AIResult {
   prompt: ResolvedPrompt;
-}
-
-export async function callAI(
-  env: WorkerEnv,
-  userId: string,
-  messages: AIMessage[],
-  fallback: string,
-  taskKey?: AITaskKey,
-): Promise<AIResult> {
-  if (!taskKey) return executeLegacyActiveProvider(env, userId, messages, fallback);
-  const task = await resolveAITask(env, userId, taskKey);
-  return executeResolvedAITask(env, { userId, task, messages, fallback });
 }
 
 export async function generateAnalysisDocument(
@@ -309,7 +295,7 @@ ${input.pageContext.slice(0, 12_000) || "未提供"}
 ${input.selection.slice(0, 8_000) || "未选择"}`;
   const fallback = `我已经收到问题，但当前账户尚未配置可用的 AI。
 
-你可以在“设置 → AI 管理”中为“普通对话”选择 Compatible、账户 API 或 OpenCode，并切换对应提示词。选中的页面内容已经随请求传给服务端，配置完成后即可基于这段上下文回答。`;
+你可以在“设置 → AI 管理”中为“普通对话”选择 API 配置或本地 Agent，并切换对应提示词。选中的页面内容已经随请求传给服务端，配置完成后即可基于这段上下文回答。`;
   const result = await executeResolvedAITask(env, {
     userId: input.userId,
     task,

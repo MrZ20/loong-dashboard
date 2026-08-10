@@ -1,36 +1,36 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from "vue";
-import { ApiError } from "./api/client";
+import { defineAsyncComponent, onMounted, ref, watch } from "vue";
+import { ApiError } from "./api/core";
 import AIChatDock from "./components/AIChatDock.vue";
-import AIChatView from "./components/AIChatView.vue";
-import AIInsightsView from "./components/AIInsightsView.vue";
 import AppSidebar from "./components/AppSidebar.vue";
 import CommunityList from "./components/CommunityList.vue";
-import CrossRepoImpactView from "./components/CrossRepoImpactView.vue";
-import DailyAnalysis from "./components/DailyAnalysis.vue";
+import DateRangeFilter from "./components/DateRangeFilter.vue";
 import DetailDrawer from "./components/DetailDrawer.vue";
-import DomainMapView from "./components/DomainMapView.vue";
 import FilterDropdown from "./components/FilterDropdown.vue";
 import InsightBanner from "./components/InsightBanner.vue";
 import LoginView from "./components/LoginView.vue";
 import Octicon from "./components/Octicon.vue";
 import RepositoryHeader from "./components/RepositoryHeader.vue";
-import SettingsView from "./components/SettingsView.vue";
-import TechnicalDocsView from "./components/TechnicalDocsView.vue";
-import WatchlistView from "./components/WatchlistView.vue";
 import { useAIChat } from "./composables/useAIChat";
 import { useAppPreferences } from "./composables/useAppPreferences";
 import { useAuthSession } from "./composables/useAuthSession";
 import { useCommunityDetail } from "./composables/useCommunityDetail";
 import { useCommunityWorkspace } from "./composables/useCommunityWorkspace";
 import { communityItemKey } from "./domain/community-item";
-import type {
-  AppView,
-  CommunityItem,
-  PromptFeatureKey,
-  RepositoryId,
-  UserAccount,
-} from "./types";
+import type { AppView, RepositoryId } from "./types/core";
+import type { CommunityItem } from "./types/community";
+import type { PromptFeatureKey } from "./types/ai";
+import type { RefreshTaskType } from "./types/refresh";
+import type { UserAccount } from "./types/account";
+
+const AIChatView = defineAsyncComponent(() => import("./components/AIChatView.vue"));
+const AIInsightsView = defineAsyncComponent(() => import("./components/AIInsightsView.vue"));
+const CrossRepoImpactView = defineAsyncComponent(() => import("./components/CrossRepoImpactView.vue"));
+const DailyAnalysis = defineAsyncComponent(() => import("./components/DailyAnalysis.vue"));
+const DomainMapView = defineAsyncComponent(() => import("./components/DomainMapView.vue"));
+const SettingsView = defineAsyncComponent(() => import("./components/SettingsView.vue"));
+const TechnicalDocsView = defineAsyncComponent(() => import("./components/TechnicalDocsView.vue"));
+const WatchlistView = defineAsyncComponent(() => import("./components/WatchlistView.vue"));
 
 const sidebarOpen = ref(false);
 const toast = ref("");
@@ -44,16 +44,21 @@ const {
   activeView,
   clearFilters,
   clearUserData,
+  communityTotal,
+  currentPage,
   currentRepo,
   documentCount,
   domainFilterOptions,
-  filteredItems,
   impactCount,
   insightCount,
   listLoading,
   loadApplicationData,
+  paginatedItems,
+  pagination,
+  pageSize,
   refreshData: refreshWorkspaceData,
   refreshing,
+  reloadCommunitySnapshot,
   repositoryData,
   searchQuery,
   selectedDomain,
@@ -64,6 +69,9 @@ const {
   todayLoading,
   todaySummaries,
   toggleWatch: updateWatch,
+  upsertCommunityItem,
+  updatedFrom,
+  updatedTo,
   watchedKeys,
   watchlistMeta,
   watchlistItems,
@@ -91,7 +99,7 @@ const {
   refreshSelectedItem,
   selectedItem,
   selectCommunityItem,
-} = useCommunityDetail(showToast);
+} = useCommunityDetail(showToast, upsertCommunityItem);
 
 const {
   authError,
@@ -154,6 +162,23 @@ async function refreshData() {
     showToast(await refreshWorkspaceData());
   } catch (cause) {
     showToast(cause instanceof ApiError ? cause.message : "GitHub 同步失败");
+  }
+}
+
+async function handleSettingsRefreshComplete(
+  repoId: RepositoryId,
+  taskType: RefreshTaskType,
+) {
+  try {
+    await reloadCommunitySnapshot(repoId);
+    if (taskType === "facts") {
+      const repo = repositoryData.value.find((candidate) => candidate.id === repoId);
+      showToast(
+        `${repo?.name ?? repoId} 刷新完成：当前 ${repo?.openPulls ?? 0} 个 PR、${repo?.openIssues ?? 0} 个 Issue`,
+      );
+    }
+  } catch (cause) {
+    showToast(cause instanceof ApiError ? cause.message : "刷新结果加载失败");
   }
 }
 
@@ -267,6 +292,7 @@ onMounted(initializeAuth);
           :initial-prompt-feature="settingsPromptFeature || undefined"
           :initial-repo="activeRepo"
           @update:user="updateCurrentUser"
+          @refresh-complete="handleSettingsRefreshComplete"
         />
         <DailyAnalysis
           v-else-if="activeView === 'analysis'"
@@ -286,7 +312,7 @@ onMounted(initializeAuth);
             <div class="list-toolbar__top">
               <div>
                 <h2>{{ activeView === "pulls" ? "Pull Requests" : "Issues" }}</h2>
-                <span>{{ filteredItems.length }} 条社区记录</span>
+                <span>{{ communityTotal }} 条社区记录</span>
               </div>
               <div class="search-field">
                 <Octicon name="search" :size="16" />
@@ -306,11 +332,15 @@ onMounted(initializeAuth);
                 </span>
                 <span>
                   <strong>筛选社区动态</strong>
-                  <small>按技术领域、当前状态和排序方式查看</small>
+                  <small>按更新时间、技术领域、状态和排序方式查看</small>
                 </span>
               </div>
 
               <div class="filter-toolbar__controls">
+                <DateRangeFilter
+                  v-model:from="updatedFrom"
+                  v-model:to="updatedTo"
+                />
                 <FilterDropdown
                   v-model="selectedDomain"
                   class="filter-dropdown--domain"
@@ -339,13 +369,18 @@ onMounted(initializeAuth);
           </section>
 
           <CommunityList
-            :items="filteredItems"
+            :items="paginatedItems"
             :loading="listLoading"
             :kind-label="activeKindLabel"
             :watched-keys="watchedKeys"
+            :current-page="pagination.currentPage"
+            :total-items="communityTotal"
+            :total-pages="pagination.totalPages"
+            :page-size="pageSize"
             @select="selectCommunityItem"
             @toggle="toggleWatch"
             @clear="clearFilters"
+            @page="currentPage = $event"
           />
         </template>
       </div>

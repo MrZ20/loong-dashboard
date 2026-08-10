@@ -2,10 +2,8 @@
 import {
   computed,
   nextTick,
-  onBeforeUnmount,
-  onMounted,
-  ref,
 } from "vue";
+import { usePopover } from "../composables/usePopover";
 import Octicon from "./Octicon.vue";
 
 type FilterTone =
@@ -42,9 +40,7 @@ const emit = defineEmits<{
   "update:modelValue": [value: string];
 }>();
 
-const root = ref<HTMLElement | null>(null);
-const trigger = ref<HTMLButtonElement | null>(null);
-const open = ref(false);
+const { root, trigger, open, close: closePopover, toggle: toggleMenu } = usePopover();
 
 const selectedOption = computed(
   () =>
@@ -80,16 +76,7 @@ function showMenu(focusSelected = false) {
 }
 
 function closeMenu(returnFocus = false) {
-  open.value = false;
-  if (returnFocus) nextTick(() => trigger.value?.focus());
-}
-
-function toggleMenu() {
-  if (open.value) {
-    closeMenu();
-  } else {
-    showMenu();
-  }
+  closePopover(returnFocus);
 }
 
 function selectOption(value: string) {
@@ -131,19 +118,6 @@ function handleOptionKeydown(event: KeyboardEvent, index: number) {
   }
 }
 
-function handleOutsidePointer(event: PointerEvent) {
-  if (root.value && !root.value.contains(event.target as Node)) {
-    closeMenu();
-  }
-}
-
-onMounted(() => {
-  document.addEventListener("pointerdown", handleOutsidePointer, true);
-});
-
-onBeforeUnmount(() => {
-  document.removeEventListener("pointerdown", handleOutsidePointer, true);
-});
 </script>
 
 <template>

@@ -1,37 +1,23 @@
 import type { PromptFeatureKey } from "./prompt-catalog";
+import {
+  AI_EXECUTION_MODES,
+  AI_TASK_KEYS,
+  type AIExecutionMode,
+  type AIPermissionProfileId,
+  type AIUpdatePolicy,
+  type AIWorkspaceMode,
+  type AITaskKey,
+} from "../../shared/contracts/ai";
 
-export const AI_EXECUTION_MODES = [
-  "environment",
-  "account_api",
-  "opencode",
-] as const;
-
-export type AIExecutionMode = (typeof AI_EXECUTION_MODES)[number];
-
-export const AI_TASK_KEYS = [
-  "vllm_pr_summary",
-  "vllm_issue_summary",
-  "vllm_pr_deep_analysis",
-  "vllm_issue_deep_analysis",
-  "vllm_classification",
-  "vllm_taxonomy_refresh",
-  "vllm_daily_report",
-  "vllm_ascend_pr_summary",
-  "vllm_ascend_issue_summary",
-  "vllm_ascend_pr_deep_analysis",
-  "vllm_ascend_issue_deep_analysis",
-  "vllm_ascend_classification",
-  "vllm_ascend_taxonomy_refresh",
-  "vllm_ascend_daily_report",
-  "cross_repo_insight",
-  "local_code_insight",
-  "domain_architecture_map",
-  "technical_document_generation",
-  "chat_assistant",
-  "repository_code_chat",
-] as const;
-
-export type AITaskKey = (typeof AI_TASK_KEYS)[number];
+export {
+  AI_EXECUTION_MODES,
+  AI_TASK_KEYS,
+  type AIExecutionMode,
+  type AIPermissionProfileId,
+  type AIUpdatePolicy,
+  type AIWorkspaceMode,
+  type AITaskKey,
+} from "../../shared/contracts/ai";
 export type AITaskGroupKey =
   | "vllm"
   | "vllm-ascend"
@@ -48,6 +34,9 @@ export interface AITaskDefinition {
   repoScope: "vllm" | "vllm-ascend" | "global";
   featureKey: PromptFeatureKey;
   defaultExecutionMode: AIExecutionMode;
+  defaultWorkspaceMode: AIWorkspaceMode;
+  defaultUpdatePolicy: AIUpdatePolicy;
+  defaultPermissionProfileId: AIPermissionProfileId;
   executionNote: string;
 }
 
@@ -71,7 +60,10 @@ function repoTasks(
       description: "代码摘要、证据和结构化结论。",
       repoScope: repo,
       featureKey: "pr_triage",
-      defaultExecutionMode: "environment",
+      defaultExecutionMode: "api",
+      defaultWorkspaceMode: "worktree",
+      defaultUpdatePolicy: "fetch",
+      defaultPermissionProfileId: "safe_readonly",
       executionNote: "只分析数据库中缺失或过期的 PR 摘要。",
     },
     {
@@ -82,7 +74,10 @@ function repoTasks(
       description: "现象、环境、影响和待确认项。",
       repoScope: repo,
       featureKey: "issue_triage",
-      defaultExecutionMode: "environment",
+      defaultExecutionMode: "api",
+      defaultWorkspaceMode: "ephemeral_worktree",
+      defaultUpdatePolicy: "none",
+      defaultPermissionProfileId: "safe_readonly",
       executionNote: "只分析数据库中缺失或过期的 Issue 摘要。",
     },
     {
@@ -94,7 +89,10 @@ function repoTasks(
       repoScope: repo,
       featureKey: "pr_deep_analysis",
       defaultExecutionMode: "opencode",
-      executionNote: "始终由用户手动启动；OpenCode 使用只读 Worktree。",
+      defaultWorkspaceMode: "worktree",
+      defaultUpdatePolicy: "fetch",
+      defaultPermissionProfileId: "safe_readonly",
+      executionNote: "始终由用户手动启动；本地 Agent 使用只读 Worktree。",
     },
     {
       key: `${prefix}_issue_deep_analysis` as AITaskKey,
@@ -105,6 +103,9 @@ function repoTasks(
       repoScope: repo,
       featureKey: "issue_deep_analysis",
       defaultExecutionMode: "opencode",
+      defaultWorkspaceMode: "ephemeral_worktree",
+      defaultUpdatePolicy: "none",
+      defaultPermissionProfileId: "safe_readonly",
       executionNote: "始终由用户手动启动；不会因打开详情而运行。",
     },
     {
@@ -115,7 +116,10 @@ function repoTasks(
       description: "仅在规则结果低置信度时补充一个主技术领域。",
       repoScope: repo,
       featureKey: classification,
-      defaultExecutionMode: "environment",
+      defaultExecutionMode: "api",
+      defaultWorkspaceMode: "ephemeral_worktree",
+      defaultUpdatePolicy: "none",
+      defaultPermissionProfileId: "safe_readonly",
       executionNote: "代码规则优先，AI 不能覆盖人工锁定分类。",
     },
     {
@@ -126,7 +130,10 @@ function repoTasks(
       description: "根据近期真实路径审查分类规则覆盖。",
       repoScope: repo,
       featureKey: taxonomyRefresh,
-      defaultExecutionMode: "environment",
+      defaultExecutionMode: "api",
+      defaultWorkspaceMode: "ephemeral_worktree",
+      defaultUpdatePolicy: "fetch",
+      defaultPermissionProfileId: "community_research",
       executionNote: "新类别只形成建议，不会自动进入 domain。",
     },
     {
@@ -137,7 +144,10 @@ function repoTasks(
       description: "北京时间自然日的仓库 Markdown 日报。",
       repoScope: repo,
       featureKey: "daily_report",
-      defaultExecutionMode: "environment",
+      defaultExecutionMode: "api",
+      defaultWorkspaceMode: "none",
+      defaultUpdatePolicy: "none",
+      defaultPermissionProfileId: "safe_readonly",
       executionNote: "只读取已同步社区事实；不会隐式刷新 GitHub。",
     },
   ];
@@ -154,8 +164,11 @@ export const AI_TASK_CATALOG: readonly AITaskDefinition[] = [
     description: "综合社区事项、关注列表和跨仓库影响。",
     repoScope: "global",
     featureKey: "cross_repo_insight",
-    defaultExecutionMode: "environment",
-    executionNote: "选择 OpenCode 时必须明确选择本地代码核对目标。",
+    defaultExecutionMode: "api",
+    defaultWorkspaceMode: "none",
+    defaultUpdatePolicy: "none",
+    defaultPermissionProfileId: "safe_readonly",
+    executionNote: "选择本地 Agent 时必须明确选择本地代码核对目标。",
   },
   {
     key: "local_code_insight",
@@ -166,6 +179,9 @@ export const AI_TASK_CATALOG: readonly AITaskDefinition[] = [
     repoScope: "global",
     featureKey: "local_code_insight",
     defaultExecutionMode: "opencode",
+    defaultWorkspaceMode: "worktree",
+    defaultUpdatePolicy: "fetch",
+    defaultPermissionProfileId: "community_research",
     executionNote: "只扫描用户明确选择的社区事项或领域。",
   },
   {
@@ -176,7 +192,10 @@ export const AI_TASK_CATALOG: readonly AITaskDefinition[] = [
     description: "维护领域架构基线、技术结构图与每日变化。",
     repoScope: "global",
     featureKey: "domain_architecture_map",
-    defaultExecutionMode: "environment",
+    defaultExecutionMode: "api",
+    defaultWorkspaceMode: "worktree",
+    defaultUpdatePolicy: "fetch",
+    defaultPermissionProfileId: "safe_readonly",
     executionNote: "稳定架构基线与北京时间今日变化分开生成。",
   },
   {
@@ -187,7 +206,10 @@ export const AI_TASK_CATALOG: readonly AITaskDefinition[] = [
     description: "根据分类、草稿和来源生成可人工确认的 Markdown 文档。",
     repoScope: "global",
     featureKey: "technical_document_generation",
-    defaultExecutionMode: "environment",
+    defaultExecutionMode: "api",
+    defaultWorkspaceMode: "none",
+    defaultUpdatePolicy: "none",
+    defaultPermissionProfileId: "safe_readonly",
     executionNote: "只生成编辑器草稿；用户确认前不会保存或覆盖技术文档。",
   },
   {
@@ -198,18 +220,24 @@ export const AI_TASK_CATALOG: readonly AITaskDefinition[] = [
     description: "基于对话、页面上下文和选中文本回答。",
     repoScope: "global",
     featureKey: "chat_assistant",
-    defaultExecutionMode: "environment",
-    executionNote: "选择 OpenCode 会明确转换为仓库分析模式。",
+    defaultExecutionMode: "api",
+    defaultWorkspaceMode: "none",
+    defaultUpdatePolicy: "none",
+    defaultPermissionProfileId: "safe_readonly",
+    executionNote: "选择本地 Agent 会明确转换为仓库分析模式。",
   },
   {
     key: "repository_code_chat",
     groupKey: "chat",
     groupName: "AI 对话",
     name: "仓库分析对话",
-    description: "通过 OpenCode Session 连续进行只读代码问答。",
+    description: "通过本地 Agent Session 连续进行只读代码问答。",
     repoScope: "global",
     featureKey: "repository_code_chat",
     defaultExecutionMode: "opencode",
+    defaultWorkspaceMode: "ephemeral_worktree",
+    defaultUpdatePolicy: "none",
+    defaultPermissionProfileId: "safe_readonly",
     executionNote: "保留 Session；切换代码版本后创建新的代码上下文。",
   },
 ] as const;
@@ -224,6 +252,10 @@ export function isAITaskKey(value: unknown): value is AITaskKey {
 
 export function isAIExecutionMode(value: unknown): value is AIExecutionMode {
   return typeof value === "string" && AI_EXECUTION_MODES.includes(value as AIExecutionMode);
+}
+
+export function isLocalAIExecutionMode(value: AIExecutionMode) {
+  return value === "opencode" || value === "codex";
 }
 
 export function getAITaskDefinition(key: AITaskKey) {

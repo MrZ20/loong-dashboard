@@ -9,9 +9,11 @@ export type CommunityListQuery = {
   repo?: string | null;
   kind?: "pr" | "issue" | null;
   domain?: string | null;
-  state?: string | null;
+  state?: "open" | "draft" | "merged" | "closed" | "reopened" | null;
   search?: string | null;
-  since?: string | null;
+  updatedFrom?: string | null;
+  updatedBefore?: string | null;
+  sort: "updated" | "number";
   limit: number;
   offset: number;
 };
@@ -30,10 +32,11 @@ const eventProjection = `
     ORDER BY occurred_at DESC, id DESC LIMIT 1
   ) AS last_event_at`;
 
-export async function listCommunityRows(
-  env: WorkerEnv,
-  input: CommunityListQuery,
-) {
+function escapeLike(value: string) {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
+function buildCommunityListWhere(input: CommunityListQuery) {
   const conditions: string[] = [];
   const bindings: unknown[] = [];
 
@@ -49,29 +52,98 @@ export async function listCommunityRows(
     conditions.push("domain = ?");
     bindings.push(input.domain);
   }
-  if (input.state) {
+  if (input.state === "reopened") {
+    conditions.push(`(
+      SELECT event_type FROM community_events
+      WHERE community_events.item_id = community_items.id
+        AND event_type != 'updated'
+      ORDER BY occurred_at DESC, id DESC LIMIT 1
+    ) = 'reopened'`);
+  } else if (input.state) {
     conditions.push("state = ?");
     bindings.push(input.state);
   }
-  if (input.since) {
+  if (input.updatedFrom) {
     conditions.push("updated_at >= ?");
-    bindings.push(input.since);
+    bindings.push(input.updatedFrom);
+  }
+  if (input.updatedBefore) {
+    conditions.push("updated_at < ?");
+    bindings.push(input.updatedBefore);
   }
   if (input.search) {
-    conditions.push("(title LIKE ? OR body_md LIKE ? OR author LIKE ?)");
-    const like = `%${input.search.slice(0, 100)}%`;
-    bindings.push(like, like, like);
+    conditions.push(`(
+      title LIKE ? ESCAPE '\\'
+      OR body_md LIKE ? ESCAPE '\\'
+      OR ai_summary LIKE ? ESCAPE '\\'
+      OR author LIKE ? ESCAPE '\\'
+      OR CAST(number AS TEXT) LIKE ? ESCAPE '\\'
+    )`);
+    const like = `%${escapeLike(input.search.slice(0, 100))}%`;
+    bindings.push(like, like, like, like, like);
   }
+
+  return {
+    clause: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "",
+    bindings,
+  };
+}
+
+export async function listCommunityRows(
+  env: WorkerEnv,
+  input: CommunityListQuery,
+) {
+  const where = buildCommunityListWhere(input);
+  const orderBy = input.sort === "number"
+    ? "number DESC, updated_at DESC, id DESC"
+    : "updated_at DESC, number DESC, id DESC";
 
   return query<Record<string, any>>(
     env,
     `SELECT community_items.*, ${eventProjection}
      FROM community_items
-     ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
-     ORDER BY important DESC, updated_at DESC, number DESC, id DESC
+     ${where.clause}
+     ORDER BY ${orderBy}
      LIMIT ? OFFSET ?`,
-    [...bindings, input.limit, input.offset],
+    [...where.bindings, input.limit, input.offset],
   );
+}
+
+export async function countCommunityRows(
+  env: WorkerEnv,
+  input: CommunityListQuery,
+) {
+  const where = buildCommunityListWhere(input);
+  const row = await first<{ total: number }>(
+    env,
+    `SELECT COUNT(*) AS total FROM community_items ${where.clause}`,
+    where.bindings,
+  );
+  return Number(row?.total ?? 0);
+}
+
+export async function listCommunityDomains(
+  env: WorkerEnv,
+  input: Pick<CommunityListQuery, "repo" | "kind">,
+) {
+  const conditions: string[] = ["domain != ''"];
+  const bindings: unknown[] = [];
+  if (input.repo) {
+    conditions.push("repo_id = ?");
+    bindings.push(input.repo);
+  }
+  if (input.kind) {
+    conditions.push("kind = ?");
+    bindings.push(input.kind);
+  }
+  const rows = await query<{ domain: string }>(
+    env,
+    `SELECT DISTINCT domain FROM community_items
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY domain ASC`,
+    bindings,
+  );
+  return rows.map((row) => row.domain).filter(Boolean);
 }
 
 export function findCommunityRow(

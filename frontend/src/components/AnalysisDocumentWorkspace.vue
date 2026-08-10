@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { api, ApiError } from "../api/client";
+import { communityApi } from "../api/community";
+import { contentApi } from "../api/content";
+import { ApiError } from "../api/core";
+import { localAnalysisApi } from "../api/local-analysis";
+import type { AnalysisDocument, LocalAnalysisEvent, LocalAnalysisJob } from "../types/analysis";
+import type { CommunityItem } from "../types/community";
 import type {
-  AnalysisDocument,
-  CommunityItem,
-  LocalAnalysisEvent,
-  LocalAnalysisJob,
   PromptFeatureKey,
-} from "../types";
+} from "../types/ai";
+import AIExecutionFooter from "./AIExecutionFooter.vue";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 import Octicon from "./Octicon.vue";
 
@@ -50,7 +52,7 @@ async function loadDocuments() {
   loading.value = true;
   error.value = "";
   try {
-    documents.value = await api.analyses(props.type, props.scope);
+    documents.value = await contentApi.analyses(props.type, props.scope);
     emit("update:count", documents.value.length);
     if (
       !selectedId.value ||
@@ -77,7 +79,7 @@ async function generate() {
     const selectedTargets = targetCandidates.value
       .filter((item) => selectedTargetKeys.value.includes(`${item.repo}:${item.kind}:${item.id}`))
       .map((item) => ({ repo: item.repo, kind: item.kind, number: item.id, title: item.title }));
-    const result = await api.generateAnalysis({
+    const result = await contentApi.generateAnalysis({
       type: props.type,
       scope: props.scope,
       useLocalCode: useLocalCode.value,
@@ -105,7 +107,7 @@ async function pollLocalJob(jobId: string) {
   if (localJobTimer !== null) window.clearTimeout(localJobTimer);
   try {
     const after = localEvents.value.at(-1)?.sequence ?? 0;
-    const result = await api.localAnalysisJob(jobId, after);
+    const result = await localAnalysisApi.localAnalysisJob(jobId, after);
     localJob.value = result.job;
     localEvents.value.push(...result.events);
     if (!terminalJobStatuses.has(result.job.status)) {
@@ -127,7 +129,7 @@ async function pollLocalJob(jobId: string) {
 
 async function resumeLocalInsightJob() {
   try {
-    const { jobs } = await api.localAnalysisJobs();
+    const { jobs } = await localAnalysisApi.localAnalysisJobs();
     const job = jobs.find((candidate) =>
       ((candidate.jobType === "insight_evidence" && candidate.subjectKey === props.scope) ||
         (candidate.jobType === "managed_ai_task" && candidate.subjectKey.startsWith(`${props.type}:${props.scope}:`))) &&
@@ -145,14 +147,14 @@ async function resumeLocalInsightJob() {
 
 async function cancelLocalJob() {
   if (!localJob.value) return;
-  await api.cancelLocalAnalysisJob(localJob.value.id);
+  await localAnalysisApi.cancelLocalAnalysisJob(localJob.value.id);
   localJob.value = { ...localJob.value, status: "cancel_requested" };
 }
 
 async function loadLocalTargets() {
   if (props.type !== "insight") return;
   try {
-    targetCandidates.value = (await api.community({ limit: 8 })).slice(0, 8);
+    targetCandidates.value = (await communityApi.community({ limit: 8 })).slice(0, 8);
   } catch {
     targetCandidates.value = [];
   }
@@ -215,7 +217,7 @@ onUnmounted(() => {
 
     <section v-if="type === 'insight'" class="local-evidence-selector">
       <label class="settings-checkbox">
-        <input v-model="useLocalCode" type="checkbox" />使用 OpenCode 核对本地代码证据
+        <input v-model="useLocalCode" type="checkbox" />使用本地代码证据
       </label>
       <p>默认不会扫描源码；仅检查下方明确选择的重点事项，并在报告中区分社区事实、代码证据与 AI 推断。</p>
       <div v-if="useLocalCode" class="local-evidence-selector__targets">
@@ -231,7 +233,7 @@ onUnmounted(() => {
       <header>
         <div>
           <span class="local-analysis-terminal__lamp" />
-          <strong>{{ localJob.jobType === 'managed_ai_task' ? 'OpenCode AI 任务' : 'OpenCode 代码证据' }}</strong>
+          <strong>{{ localJob.jobType === 'managed_ai_task' ? '本地 AI 任务' : '本地代码证据' }}</strong>
         </div>
         <button
           v-if="!['completed', 'failed', 'cancelled'].includes(localJob.status)"
@@ -284,7 +286,7 @@ onUnmounted(() => {
                   · {{ selectedDocument.promptTemplateName }} r{{ selectedDocument.promptRevision }}
                 </template>
               </p>
-              <p v-if="selectedDocument.localEvidence" class="analysis-local-evidence-badge">已由 OpenCode 读取本地源码并校验引用</p>
+              <p v-if="selectedDocument.localEvidence" class="analysis-local-evidence-badge">已由本地 Agent 读取源码并校验引用</p>
             </div>
             <span class="analysis-doc-reader__status">
               <Octicon name="check-circle-fill" :size="13" />
@@ -302,6 +304,14 @@ onUnmounted(() => {
             </code>
           </div>
           <MarkdownRenderer :content="selectedDocument.contentMd" />
+          <AIExecutionFooter
+            :engine="selectedDocument.runner"
+            :provider="selectedDocument.provider"
+            :model="selectedDocument.model"
+            :prompt-name="selectedDocument.promptTemplateName"
+            :prompt-version="selectedDocument.promptVersion"
+            :prompt-revision="selectedDocument.promptRevision"
+          />
         </template>
         <div v-else class="empty-state">
           <span class="empty-state__icon"><Octicon name="file" :size="24" /></span>

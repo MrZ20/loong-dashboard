@@ -1,15 +1,28 @@
 import { requireUser } from "../auth";
 import type { WorkerEnv } from "../db";
 import {
+  AI_PERMISSION_PROFILE_DEFINITIONS,
+  AI_UPDATE_POLICIES,
+  AI_WORKSPACE_MODES,
+} from "../../shared/contracts/ai";
+import {
   isAIExecutionMode,
   isAITaskKey,
 } from "../domain/ai-task-catalog";
-import { runnerIsOnline } from "../domain/local-analysis";
+import {
+  isLocalAgentEngine,
+  localAgentEngineName,
+  localJobTypeForAITask,
+  validateLocalAgentModelSelection,
+  validateLocalAgentRuntime,
+} from "../domain/local-analysis";
 import { cleanText, HttpError, json, readJson, requireMethod } from "../http";
 import { latestLocalRunner } from "../repositories/local-runner";
 import { executeResolvedAITask } from "../services/ai-execution";
 import {
+  clearAITaskError,
   listAITaskSettings,
+  markAITaskRun,
   resolveAITask,
   saveAITaskSettings,
 } from "../services/ai-task-settings";
@@ -35,22 +48,30 @@ export async function handleAITaskSettings(
     requireMethod(request, ["POST"]);
     if (!isAITaskKey(testMatch[0])) throw new HttpError(404, "AI 任务不存在");
     const task = await resolveAITask(env, user.id, testMatch[0]);
-    if (task.executionMode === "opencode") {
+    if (task.executionMode !== "api") {
       const runner = await latestLocalRunner(env);
-      if (!runner || !runnerIsOnline(runner.last_seen_at)) {
-        throw new HttpError(503, "OpenCode Runner 离线，当前任务不会自动回退到 API");
+      if (!isLocalAgentEngine(task.executionMode)) {
+        throw new HttpError(409, "未知的本地 Agent 引擎");
       }
-      if (!runner.readonly_verified) {
-        throw new HttpError(503, "OpenCode Runner 尚未通过只读权限验证");
-      }
-      const providers = runner.providers_json ? JSON.parse(runner.providers_json) : [];
-      if (
-        task.opencodeProviderId &&
-        !providers.some((provider: any) => provider.id === task.opencodeProviderId)
-      ) {
-        throw new HttpError(409, "所选 OpenCode Provider 当前不可用");
-      }
-      return json({ ok: true, message: "Runner 在线，Provider / Model 和只读权限检查通过" });
+      const runtime = validateLocalAgentRuntime({
+        runner,
+        engine: task.executionMode,
+        jobType: localJobTypeForAITask(task.key),
+        permissionProfileId: task.permissionProfileId,
+      });
+      if (!runtime.ok) throw new HttpError(503, runtime.error);
+      const selection = validateLocalAgentModelSelection({
+        state: runtime.engine,
+        providerId: task.engineProviderId,
+        modelId: task.engineModelId,
+        reasoningEffort: task.reasoningEffort,
+      });
+      if (!selection.ok) throw new HttpError(409, selection.error);
+      await markAITaskRun(env, user.id, task.key, "ready");
+      return json({
+        ok: true,
+        message: `${localAgentEngineName(task.executionMode)} Runner、模型和只读权限检查通过`,
+      });
     }
     const result = await executeResolvedAITask(env, {
       userId: user.id,
@@ -63,6 +84,14 @@ export async function handleAITaskSettings(
     });
     if (result.provider !== "api") throw new HttpError(503, "当前 API 配置尚不可用");
     return json({ ok: true, message: `${result.providerName} / ${result.model} 连接成功` });
+  }
+
+  const errorMatch = pathMatch(path, /^\/api\/settings\/ai-tasks\/([^/]+)\/error$/);
+  if (errorMatch) {
+    requireMethod(request, ["DELETE"]);
+    if (!isAITaskKey(errorMatch[0])) throw new HttpError(404, "AI 任务不存在");
+    await clearAITaskError(env, user.id, errorMatch[0]);
+    return json({ ok: true });
   }
 
   const taskMatch = pathMatch(path, /^\/api\/settings\/ai-tasks\/([^/]+)$/);
@@ -79,10 +108,19 @@ export async function handleAITaskSettings(
   const task = await saveAITaskSettings(env, user.id, taskMatch[0], {
     executionMode: body.executionMode,
     providerConfigId: cleanText(body.providerConfigId, 200),
-    opencodeProviderId: cleanText(body.opencodeProviderId, 200),
-    opencodeModelId: cleanText(body.opencodeModelId, 300),
+    engineProviderId: cleanText(body.engineProviderId, 200),
+    engineModelId: cleanText(body.engineModelId, 300),
+    reasoningEffort: cleanText(body.reasoningEffort, 50),
+    workspaceMode: AI_WORKSPACE_MODES.includes(body.workspaceMode as any)
+      ? body.workspaceMode as any
+      : "none",
+    updatePolicy: AI_UPDATE_POLICIES.includes(body.updatePolicy as any)
+      ? body.updatePolicy as any
+      : "none",
+    permissionProfileId: AI_PERMISSION_PROFILE_DEFINITIONS.some(
+      (profile) => profile.id === body.permissionProfileId,
+    ) ? body.permissionProfileId as any : "safe_readonly",
     promptTemplateId,
   });
   return json({ task });
 }
-

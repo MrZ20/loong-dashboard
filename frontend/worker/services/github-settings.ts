@@ -6,8 +6,37 @@ import {
   deleteGithubCredential,
   findGithubCredential,
   saveGithubCredential,
+  updateGithubCredentialRateLimits,
   updateGithubCredentialVerification,
 } from "../repositories/github-credentials";
+
+type GithubRateResource = {
+  remaining?: number;
+  limit?: number;
+  reset?: number;
+};
+
+function normalizedRateResource(resource: GithubRateResource | undefined) {
+  return {
+    remaining: Number.isFinite(Number(resource?.remaining)) ? Number(resource?.remaining) : null,
+    limit: Number.isFinite(Number(resource?.limit)) ? Number(resource?.limit) : null,
+    resetAt: resource?.reset
+      ? new Date(Number(resource.reset) * 1_000).toISOString()
+      : null,
+  };
+}
+
+async function fetchGithubRateLimits(env: WorkerEnv) {
+  const rate = await githubFetch<{
+    resources?: { core?: GithubRateResource; graphql?: GithubRateResource };
+    rate?: GithubRateResource;
+  }>(env, "/rate_limit");
+  return {
+    rest: normalizedRateResource(rate.resources?.core ?? rate.rate),
+    graphql: normalizedRateResource(rate.resources?.graphql),
+    checkedAt: new Date().toISOString(),
+  };
+}
 
 function publicGithubSettings(env: WorkerEnv, row: Record<string, any> | null) {
   const source = row?.encrypted_token
@@ -23,6 +52,10 @@ function publicGithubSettings(env: WorkerEnv, row: Record<string, any> | null) {
     rateLimitRemaining: row?.rate_limit_remaining ?? null,
     rateLimitLimit: row?.rate_limit_limit ?? null,
     rateLimitResetAt: row?.rate_limit_reset_at ?? null,
+    graphqlRateLimitRemaining: row?.graphql_rate_limit_remaining ?? null,
+    graphqlRateLimitLimit: row?.graphql_rate_limit_limit ?? null,
+    graphqlRateLimitResetAt: row?.graphql_rate_limit_reset_at ?? null,
+    rateLimitCheckedAt: row?.rate_limit_checked_at ?? null,
     lastVerifiedAt: row?.last_verified_at ?? null,
     lastError: row?.last_error ?? null,
   };
@@ -68,32 +101,33 @@ export async function verifyGithubToken(env: WorkerEnv, userId: string) {
   if (!token) throw new HttpError(400, "请先保存 GitHub Token");
   const githubEnv = { ...env, GITHUB_TOKEN: token };
   try {
-    const [account, rate] = await Promise.all([
+    const [account, rates] = await Promise.all([
       githubFetch<{ login?: string }>(githubEnv, "/user"),
-      githubFetch<{
-        resources?: { core?: { remaining?: number; limit?: number; reset?: number } };
-        rate?: { remaining?: number; limit?: number; reset?: number };
-      }>(githubEnv, "/rate_limit"),
+      fetchGithubRateLimits(githubEnv),
     ]);
-    const core = rate.resources?.core ?? rate.rate ?? {};
-    const resetAt = core.reset
-      ? new Date(Number(core.reset) * 1_000).toISOString()
-      : null;
     if (row?.encrypted_token) {
       await updateGithubCredentialVerification(env, {
         userId,
         login: account.login || "",
-        remaining: Number.isFinite(Number(core.remaining)) ? Number(core.remaining) : null,
-        limit: Number.isFinite(Number(core.limit)) ? Number(core.limit) : null,
-        resetAt,
+        remaining: rates.rest.remaining,
+        limit: rates.rest.limit,
+        resetAt: rates.rest.resetAt,
+        graphqlRemaining: rates.graphql.remaining,
+        graphqlLimit: rates.graphql.limit,
+        graphqlResetAt: rates.graphql.resetAt,
+        rateLimitCheckedAt: rates.checkedAt,
       });
     }
     return {
       ...(await getGithubSettings(env, userId)),
       verifiedLogin: account.login || "",
-      rateLimitRemaining: Number.isFinite(Number(core.remaining)) ? Number(core.remaining) : null,
-      rateLimitLimit: Number.isFinite(Number(core.limit)) ? Number(core.limit) : null,
-      rateLimitResetAt: resetAt,
+      rateLimitRemaining: rates.rest.remaining,
+      rateLimitLimit: rates.rest.limit,
+      rateLimitResetAt: rates.rest.resetAt,
+      graphqlRateLimitRemaining: rates.graphql.remaining,
+      graphqlRateLimitLimit: rates.graphql.limit,
+      graphqlRateLimitResetAt: rates.graphql.resetAt,
+      rateLimitCheckedAt: rates.checkedAt,
       lastVerifiedAt: new Date().toISOString(),
       lastError: null,
     };
@@ -104,6 +138,34 @@ export async function verifyGithubToken(env: WorkerEnv, userId: string) {
     }
     throw error;
   }
+}
+
+export async function refreshGithubRateLimits(env: WorkerEnv, userId: string) {
+  const row = await findGithubCredential(env, userId);
+  const githubEnv = await withUserGithubToken(env, userId);
+  const rates = await fetchGithubRateLimits(githubEnv);
+  if (row?.encrypted_token) {
+    await updateGithubCredentialRateLimits(env, {
+      userId,
+      remaining: rates.rest.remaining,
+      limit: rates.rest.limit,
+      resetAt: rates.rest.resetAt,
+      graphqlRemaining: rates.graphql.remaining,
+      graphqlLimit: rates.graphql.limit,
+      graphqlResetAt: rates.graphql.resetAt,
+      checkedAt: rates.checkedAt,
+    });
+  }
+  return {
+    ...(await getGithubSettings(env, userId)),
+    rateLimitRemaining: rates.rest.remaining,
+    rateLimitLimit: rates.rest.limit,
+    rateLimitResetAt: rates.rest.resetAt,
+    graphqlRateLimitRemaining: rates.graphql.remaining,
+    graphqlRateLimitLimit: rates.graphql.limit,
+    graphqlRateLimitResetAt: rates.graphql.resetAt,
+    rateLimitCheckedAt: rates.checkedAt,
+  };
 }
 
 export async function removeGithubToken(env: WorkerEnv, userId: string) {

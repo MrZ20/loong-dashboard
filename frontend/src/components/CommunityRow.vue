@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { CommunityItem } from "../types";
+import type { CommunityItem } from "../types/community";
 import Octicon from "./Octicon.vue";
 
 const props = defineProps<{
   item: CommunityItem;
   watched: boolean;
+  pageIndex: number;
 }>();
 
 const emit = defineEmits<{
@@ -65,6 +66,9 @@ const ciLabel = computed(() => {
     @click="emit('select', item)"
     @keydown.enter="emit('select', item)"
   >
+    <span class="community-row__index" :title="`列表第 ${pageIndex} 条`">
+      {{ pageIndex }}
+    </span>
     <span class="community-row__state" :class="stateClass">
       <Octicon :name="iconName" :size="20" />
     </span>

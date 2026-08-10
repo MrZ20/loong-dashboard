@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { ChatMessage } from "../types";
+import type { ChatMessage } from "../types/chat";
+import AIExecutionFooter from "./AIExecutionFooter.vue";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 import Octicon from "./Octicon.vue";
 
@@ -7,6 +8,19 @@ defineProps<{
   messages: ChatMessage[];
   sending: boolean;
 }>();
+
+function contextText(message: ChatMessage, ...keys: string[]) {
+  for (const key of keys) {
+    const value = message.context?.[key];
+    if (typeof value === "string" && value) return value;
+  }
+  return "";
+}
+
+function contextNumber(message: ChatMessage, key: string) {
+  const value = Number(message.context?.[key]);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
 </script>
 
 <template>
@@ -28,6 +42,15 @@ defineProps<{
       <div>
         <small>{{ message.role === "assistant" ? "LoongBoard AI" : "你" }}</small>
         <MarkdownRenderer :content="message.contentMd" compact />
+        <AIExecutionFooter
+          v-if="message.role === 'assistant'"
+          :engine="contextText(message, 'executionMode', 'mode')"
+          :provider="contextText(message, 'providerName', 'provider', 'providerId')"
+          :model="contextText(message, 'model', 'modelId')"
+          :prompt-name="contextText(message, 'promptTemplateName')"
+          :prompt-version="contextText(message, 'promptVersion')"
+          :prompt-revision="contextNumber(message, 'promptRevision')"
+        />
       </div>
     </article>
     <article v-if="sending" class="ai-chat-message" data-role="assistant">

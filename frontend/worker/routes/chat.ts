@@ -1,9 +1,7 @@
 import { answerChat } from "../ai";
 import { requireUser } from "../auth";
-import {
-  parseJson,
-  type WorkerEnv,
-} from "../db";
+import type { WorkerEnv } from "../db";
+import { parseJson } from "../mappers/database-row";
 import {
   cleanText,
   HttpError,
@@ -24,7 +22,7 @@ import {
   touchThreadRow,
 } from "../repositories/chat";
 import { updateThreadLocalAnalysisState } from "../repositories/local-runner";
-import { enqueueRepositoryChat } from "../services/local-analysis";
+import { enqueueRepositoryChat } from "../services/local-runtime/enqueue";
 import { resolveAITask } from "../services/ai-task-settings";
 
 function pathMatch(pathname: string, pattern: RegExp) {
@@ -47,8 +45,8 @@ export async function handleChat(request: Request, env: WorkerEnv, path: string)
           targetRef: row.target_ref || "",
           providerId: row.provider_id || "",
           modelId: row.model_id || "",
-          opencodeSessionId: row.opencode_session_id ?? null,
-          opencodeCommitSha: row.opencode_commit_sha || "",
+          agentSessionId: row.agent_session_id ?? null,
+          agentCommitSha: row.agent_commit_sha || "",
           runnerJobId: row.runner_job_id ?? null,
           localEvidence: Boolean(row.local_evidence),
           createdAt: row.created_at,
@@ -151,7 +149,7 @@ export async function handleChat(request: Request, env: WorkerEnv, path: string)
       throw new HttpError(400, "仓库分析模式需要选择代码范围");
     }
     const repositoryTask = await resolveAITask(env, user.id, "repository_code_chat");
-    if (repositoryTask.executionMode === "opencode") {
+    if (repositoryTask.executionMode !== "api") {
       const result = await enqueueRepositoryChat(env, {
         userId: user.id,
         threadId,
@@ -191,9 +189,13 @@ export async function handleChat(request: Request, env: WorkerEnv, path: string)
       context: {
         mode: "repository",
         localEvidence: false,
+        executionMode: "api",
         model: result.model,
         provider: result.providerName,
         promptTemplateId: result.prompt.templateId,
+        promptTemplateName: result.prompt.name,
+        promptVersion: result.prompt.promptVersion,
+        promptRevision: result.prompt.revision,
       },
       createdAt: assistantAt,
     });
@@ -210,13 +212,29 @@ export async function handleChat(request: Request, env: WorkerEnv, path: string)
     });
     return json({
       userMessage: { id: userMessageId, role: "user", contentMd: content, createdAt: now },
-      assistantMessage: { id: assistantId, role: "assistant", contentMd: result.content, createdAt: assistantAt },
+      assistantMessage: {
+        id: assistantId,
+        role: "assistant",
+        contentMd: result.content,
+        context: {
+          mode: "repository",
+          localEvidence: false,
+          executionMode: "api",
+          model: result.model,
+          provider: result.providerName,
+          promptTemplateId: result.prompt.templateId,
+          promptTemplateName: result.prompt.name,
+          promptVersion: result.prompt.promptVersion,
+          promptRevision: result.prompt.revision,
+        },
+        createdAt: assistantAt,
+      },
       provider: result.provider,
       providerName: result.providerName,
     }, { status: 201 });
   }
   const normalTask = await resolveAITask(env, user.id, "chat_assistant");
-  if (normalTask.executionMode === "opencode") {
+  if (normalTask.executionMode !== "api") {
     const repoScope = ["vllm", "vllm-ascend", "both", "current"].includes(body.repoScope || "")
       ? String(body.repoScope)
       : "both";
@@ -260,11 +278,13 @@ export async function handleChat(request: Request, env: WorkerEnv, path: string)
     role: "assistant",
     contentMd: result.content,
     context: {
+      executionMode: "api",
       model: result.model,
       provider: result.provider,
       providerName: result.providerName,
       promptTemplateId: result.prompt.templateId,
       promptTemplateName: result.prompt.name,
+      promptVersion: result.prompt.promptVersion,
       promptRevision: result.prompt.revision,
     },
     createdAt: assistantAt,
@@ -277,6 +297,16 @@ export async function handleChat(request: Request, env: WorkerEnv, path: string)
         id: assistantId,
         role: "assistant",
         contentMd: result.content,
+        context: {
+          executionMode: "api",
+          model: result.model,
+          provider: result.provider,
+          providerName: result.providerName,
+          promptTemplateId: result.prompt.templateId,
+          promptTemplateName: result.prompt.name,
+          promptVersion: result.prompt.promptVersion,
+          promptRevision: result.prompt.revision,
+        },
         createdAt: assistantAt,
       },
       provider: result.provider,

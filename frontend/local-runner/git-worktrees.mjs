@@ -1,8 +1,23 @@
 import { existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
+import { requestedSessionId } from "./engines/contracts.mjs";
 
 const REPOSITORY_IDS = ["vllm", "vllm-ascend"];
+const repositoryOperations = new Map();
+
+async function withRepositoryOperation(repository, action) {
+  const previous = repositoryOperations.get(repository) || Promise.resolve();
+  const current = previous.catch(() => {}).then(action);
+  repositoryOperations.set(repository, current);
+  try {
+    return await current;
+  } finally {
+    if (repositoryOperations.get(repository) === current) {
+      repositoryOperations.delete(repository);
+    }
+  }
+}
 
 export function repositoryPreparationAction(path) {
   return existsSync(path) ? "fetch" : "clone";
@@ -12,9 +27,42 @@ export function worktreeAddArgs(repositoryPath, worktreePath, commit) {
   return ["-C", repositoryPath, "worktree", "add", "--detach", worktreePath, commit];
 }
 
-export function canReuseRetainedWorktree(retained, repositories, explicitCommit, repoScope) {
+function remoteRepositorySlug(value) {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/^git@github\.com:/i, "github.com/")
+    .replace(/^ssh:\/\/git@github\.com\//i, "github.com/")
+    .replace(/^https?:\/\/github\.com\//i, "github.com/")
+    .replace(/\.git$/i, "")
+    .replace(/\/+$/, "");
+  const match = normalized.match(/github\.com\/([^/]+\/[^/]+)$/i);
+  return match ? match[1].toLowerCase() : "";
+}
+
+export function selectFetchRemote(remotes, canonicalUrl) {
+  const canonical = remoteRepositorySlug(canonicalUrl);
+  const exact = remotes.find((remote) => remoteRepositorySlug(remote.url) === canonical);
+  if (exact?.name) return exact.name;
+  return remotes.find((remote) => remote.name === "origin")?.name || remotes[0]?.name || "origin";
+}
+
+export function isPinnedCommit(ref) {
+  return /^[0-9a-f]{40}$/i.test(String(ref || ""));
+}
+
+export function canReuseRetainedWorkspace(
+  retained,
+  repositories,
+  explicitCommit,
+  repoScope,
+  workspaceMode,
+  permissionProfileId,
+) {
   return Boolean(
+    workspaceMode === "worktree" &&
     retained &&
+    retained.workspaceMode === workspaceMode &&
+    retained.permissionProfileId === permissionProfileId &&
     (!explicitCommit || retained.commits?.[repoScope] === explicitCommit) &&
     repositories.every((repo) => retained.commits?.[repo] && existsSync(retained.worktrees?.[repo])),
   );
@@ -56,7 +104,7 @@ export async function runProcess(command, args, options = {}) {
   });
 }
 
-export class GitWorktreeManager {
+export class WorkspaceManager {
   constructor(config, emit) {
     this.config = config;
     this.emit = emit;
@@ -64,7 +112,7 @@ export class GitWorktreeManager {
 
   repoPath(repository) {
     if (!REPOSITORY_IDS.includes(repository)) throw new Error(`不允许访问仓库：${repository}`);
-    return resolve(this.config.repositories[repository]);
+    return resolve(this.config.repositories[repository].path);
   }
 
   async status(repository) {
@@ -86,25 +134,39 @@ export class GitWorktreeManager {
     }
     mkdirSync(dirname(path), { recursive: true });
     await this.emit("repository_prepare", "git", `正在初始化 ${repository} 本地仓库`, { repository });
-    await runProcess("git", ["clone", "--filter=blob:none", "--no-checkout", this.config.cloneUrls[repository], path], {
+    await runProcess("git", ["clone", "--filter=blob:none", "--no-checkout", this.config.repositories[repository].cloneUrl, path], {
       timeoutMs: 15 * 60_000,
     });
     return this.status(repository);
+  }
+
+  async fetchRemote(repository) {
+    const path = this.repoPath(repository);
+    const { stdout } = await runProcess("git", ["-C", path, "remote", "-v"], { timeoutMs: 15_000 });
+    const remotes = stdout.split("\n").flatMap((line) => {
+      const match = line.match(/^(\S+)\s+(\S+)\s+\(fetch\)$/);
+      return match ? [{ name: match[1], url: match[2] }] : [];
+    });
+    return selectFetchRemote(remotes, this.config.repositories[repository].cloneUrl);
   }
 
   async fetch(repository, pullNumber = null) {
     const path = this.repoPath(repository);
     const status = await this.status(repository);
     if (!status.git) throw new Error(`${repository} 本地仓库不存在，请先执行初始化仓库`);
-    await this.emit("git_fetch", "git", `[Git] 正在更新 ${repository} 远端引用`, { repository });
-    await runProcess("git", ["-C", path, "fetch", "--prune", "origin"], { timeoutMs: 10 * 60_000 });
-    if (pullNumber) {
-      try {
-        await runProcess("git", ["-C", path, "fetch", "origin", `pull/${pullNumber}/head`], { timeoutMs: 5 * 60_000 });
-      } catch {
-        // The normal fetch may already contain the requested SHA. Resolution below is authoritative.
+    const remote = await this.fetchRemote(repository);
+    return withRepositoryOperation(repository, async () => {
+      await this.emit("git_fetch", "git", `[Git] 正在更新 ${repository} 远端引用`, { repository, remote });
+      await runProcess("git", ["-C", path, "fetch", "--prune", remote], { timeoutMs: 10 * 60_000 });
+      if (pullNumber) {
+        try {
+          await runProcess("git", ["-C", path, "fetch", remote, `pull/${pullNumber}/head`], { timeoutMs: 5 * 60_000 });
+        } catch {
+          // The normal fetch may already contain the requested SHA. Resolution below is authoritative.
+        }
       }
-    }
+      return remote;
+    });
   }
 
   async resolveCommit(repository, ref) {
@@ -123,17 +185,30 @@ export class GitWorktreeManager {
     }
   }
 
+  async hasCommit(repository, ref) {
+    if (!isPinnedCommit(ref)) return false;
+    const path = this.repoPath(repository);
+    try {
+      await runProcess("git", ["-C", path, "cat-file", "-e", `${ref}^{commit}`], { timeoutMs: 30_000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async createWorktree(runId, repository, commit, label = "head") {
     const repoPath = this.repoPath(repository);
     const path = resolve(this.config.worktreeRoot, runId, `${repository}-${label}`);
     if (!inside(this.config.worktreeRoot, path)) throw new Error("Worktree 路径越界");
-    if (existsSync(path)) {
-      await runProcess("git", ["-C", repoPath, "worktree", "remove", "--force", path], { timeoutMs: 60_000 }).catch(() => {
-        rmSync(path, { recursive: true, force: true });
-      });
-    }
-    mkdirSync(dirname(path), { recursive: true });
-    await runProcess("git", worktreeAddArgs(repoPath, path, commit), { timeoutMs: 5 * 60_000 });
+    await withRepositoryOperation(repository, async () => {
+      if (existsSync(path)) {
+        await runProcess("git", ["-C", repoPath, "worktree", "remove", "--force", path], { timeoutMs: 60_000 }).catch(() => {
+          rmSync(path, { recursive: true, force: true });
+        });
+      }
+      mkdirSync(dirname(path), { recursive: true });
+      await runProcess("git", worktreeAddArgs(repoPath, path, commit), { timeoutMs: 5 * 60_000 });
+    });
     await this.emit("worktree_create", "git", `[Git] 已创建 ${repository}@${commit.slice(0, 12)} 的只读分析 Worktree`, {
       repository,
       commitSha: commit,
@@ -143,6 +218,20 @@ export class GitWorktreeManager {
 
   async prepare(job, state) {
     const request = job.request || {};
+    const requestedWorkspaceMode = request.workspaceMode === "repository"
+      ? "ephemeral_worktree"
+      : request.workspaceMode;
+    const workspaceMode = ["none", "ephemeral_worktree", "worktree"].includes(requestedWorkspaceMode)
+      ? requestedWorkspaceMode
+      : "worktree";
+    const updatePolicy = request.updatePolicy === "fetch" ? "fetch" : "none";
+    if (workspaceMode === "none") {
+      const root = resolve(this.config.scratchRoot, job.id);
+      if (!inside(this.config.scratchRoot, root)) throw new Error("临时工作区路径越界");
+      mkdirSync(root, { recursive: true });
+      await this.emit("repository_prepare", "runner", "本任务不挂载源码仓库", { workspaceMode });
+      return { root, worktrees: {}, commits: {}, reused: false, workspaceMode };
+    }
     let repositories;
     if (job.repoScope === "both" || job.repoScope === "all") repositories = [...REPOSITORY_IDS];
     else if (job.repoScope === "current") repositories = request.repository ? [request.repository] : ["vllm-ascend"];
@@ -152,33 +241,112 @@ export class GitWorktreeManager {
     }
     if (!repositories.length) throw new Error("任务没有可分析的本地仓库");
 
-    const retained = job.opencodeSessionId ? state.session(job.opencodeSessionId) : null;
+    const sessionId = requestedSessionId(job);
+    const retained = sessionId ? state.session(sessionId) : null;
     const explicitCommit = job.headSha || (/^[0-9a-f]{40}$/i.test(job.targetRef || "") ? job.targetRef : null);
-    if (canReuseRetainedWorktree(retained, repositories, explicitCommit, job.repoScope)) {
-      return { root: retained.root, worktrees: retained.worktrees, commits: retained.commits, reused: true };
+    if (canReuseRetainedWorkspace(
+      retained,
+      repositories,
+      explicitCommit,
+      job.repoScope,
+      workspaceMode,
+      request.permissionProfileId || "safe_readonly",
+    )) {
+      return {
+        root: retained.root,
+        worktrees: retained.worktrees,
+        commits: retained.commits,
+        reused: true,
+        workspaceMode,
+      };
     }
 
-    const worktrees = {};
-    const commits = {};
-    for (const repository of repositories) {
-      if (request.autoFetch !== false && this.config.autoFetch) {
-        await this.fetch(repository, request.number || null);
-      } else {
-        const status = await this.status(repository);
-        if (!status.git) throw new Error(`${repository} 本地仓库不存在，请先初始化`);
+    const prepared = {
+      root: resolve(this.config.worktreeRoot, job.id),
+      worktrees: {},
+      commits: {},
+      reused: false,
+      workspaceMode,
+    };
+    try {
+      for (const repository of repositories) {
+        const target = repository === job.repoScope
+          ? job.headSha || job.targetRef || "HEAD"
+          : request.targets?.find((candidate) => candidate?.repo === repository)?.commit || "HEAD";
+        const pinnedRefs = [target];
+        if (repository === job.repoScope && job.baseSha && job.baseSha !== target) pinnedRefs.push(job.baseSha);
+        const localPinnedRefsAvailable = pinnedRefs.every(isPinnedCommit) &&
+          (await Promise.all(pinnedRefs.map((ref) => this.hasCommit(repository, ref)))).every(Boolean);
+        if (updatePolicy === "fetch" && this.config.autoFetch && !localPinnedRefsAvailable) {
+          await this.fetch(repository, request.number || null);
+        } else {
+          const status = await this.status(repository);
+          if (!status.git) throw new Error(`${repository} 本地仓库不存在，请先初始化`);
+          if (localPinnedRefsAvailable) {
+            await this.emit("repository_prepare", "git", `[Git] ${repository} 已具备指定 Base/Head，跳过远端获取`, {
+              repository,
+              refs: pinnedRefs,
+            });
+          }
+        }
+        const commit = await this.resolveCommit(repository, target);
+        prepared.commits[repository] = commit;
+        prepared.worktrees[repository] = await this.createWorktree(job.id, repository, commit, "head");
+        if (repository === job.repoScope && job.baseSha && job.baseSha !== commit) {
+          const baseCommit = await this.resolveCommit(repository, job.baseSha);
+          prepared.worktrees[`${repository}:base`] = await this.createWorktree(job.id, repository, baseCommit, "base");
+        }
       }
-      const target = repository === job.repoScope
-        ? job.headSha || job.targetRef || "HEAD"
-        : request.targets?.find((target) => target?.repo === repository)?.commit || "HEAD";
-      const commit = await this.resolveCommit(repository, target);
-      commits[repository] = commit;
-      worktrees[repository] = await this.createWorktree(job.id, repository, commit, "head");
-      if (repository === job.repoScope && job.baseSha && job.baseSha !== commit) {
-        const baseCommit = await this.resolveCommit(repository, job.baseSha);
-        worktrees[`${repository}:base`] = await this.createWorktree(job.id, repository, baseCommit, "base");
+      return prepared;
+    } catch (error) {
+      await this.cleanupPrepared(prepared).catch(() => {});
+      throw error;
+    }
+  }
+
+  async cleanupPrepared(prepared) {
+    if (!prepared || prepared.reused) return 0;
+    if (prepared.workspaceMode === "none") {
+      if (inside(this.config.scratchRoot, prepared.root)) {
+        rmSync(prepared.root, { recursive: true, force: true });
+      }
+      return 1;
+    }
+    if (!inside(this.config.worktreeRoot, prepared.root)) {
+      throw new Error("Worktree 清理路径越界");
+    }
+    let removed = 0;
+    for (const [key, worktree] of Object.entries(prepared.worktrees || {})) {
+      const repository = key.split(":")[0];
+      if (!REPOSITORY_IDS.includes(repository) || !inside(prepared.root, worktree)) continue;
+      const repoPath = this.repoPath(repository);
+      if (existsSync(worktree)) {
+        await withRepositoryOperation(repository, async () => {
+          await runProcess(
+            "git",
+            ["-C", repoPath, "worktree", "remove", "--force", worktree],
+            { timeoutMs: 60_000 },
+          ).catch(async () => {
+            rmSync(worktree, { recursive: true, force: true });
+            await runProcess("git", ["-C", repoPath, "worktree", "prune"], { timeoutMs: 60_000 });
+          });
+        });
+        removed += 1;
       }
     }
-    return { root: resolve(this.config.worktreeRoot, job.id), worktrees, commits, reused: false };
+    rmSync(prepared.root, { recursive: true, force: true });
+    await this.emit(
+      "worktree_cleanup",
+      "git",
+      `[Git] 已清理本次任务的 ${removed} 个临时 Worktree`,
+      { workspaceMode: prepared.workspaceMode, removed },
+    );
+    return removed;
+  }
+
+  async finalize(prepared) {
+    if (prepared?.workspaceMode !== "ephemeral_worktree") return 0;
+    return this.cleanupPrepared(prepared);
   }
 
   validateReferences(references, prepared) {
@@ -218,10 +386,10 @@ export class GitWorktreeManager {
   }
 
   async cleanupExpired(retentionHours = this.config.worktreeRetentionHours) {
-    if (!existsSync(this.config.worktreeRoot)) return 0;
+    if (!existsSync(this.config.worktreeRoot) && !existsSync(this.config.scratchRoot)) return 0;
     const { readdirSync } = await import("node:fs");
     let removed = 0;
-    for (const entry of readdirSync(this.config.worktreeRoot)) {
+    for (const entry of existsSync(this.config.worktreeRoot) ? readdirSync(this.config.worktreeRoot) : []) {
       const path = resolve(this.config.worktreeRoot, entry);
       if (!inside(this.config.worktreeRoot, path)) continue;
       const age = Date.now() - statSync(path).mtimeMs;
@@ -231,10 +399,20 @@ export class GitWorktreeManager {
         for (const label of ["head", "base"]) {
           const worktree = resolve(path, `${repository}-${label}`);
           if (existsSync(worktree)) {
-            await runProcess("git", ["-C", repoPath, "worktree", "remove", "--force", worktree], { timeoutMs: 60_000 }).catch(() => {});
+            await withRepositoryOperation(repository, () =>
+              runProcess("git", ["-C", repoPath, "worktree", "remove", "--force", worktree], { timeoutMs: 60_000 }),
+            ).catch(() => {});
           }
         }
       }
+      rmSync(path, { recursive: true, force: true });
+      removed += 1;
+    }
+    for (const entry of existsSync(this.config.scratchRoot) ? readdirSync(this.config.scratchRoot) : []) {
+      const path = resolve(this.config.scratchRoot, entry);
+      if (!inside(this.config.scratchRoot, path)) continue;
+      const age = Date.now() - statSync(path).mtimeMs;
+      if (age < retentionHours * 3_600_000) continue;
       rmSync(path, { recursive: true, force: true });
       removed += 1;
     }

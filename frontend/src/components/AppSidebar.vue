@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
-import type { AppTab, AppView, RepositoryId, RepositoryMeta } from "../types";
+import type { AppTab, AppView, RepositoryId } from "../types/core";
+import type { RepositoryMeta } from "../types/community";
 import Octicon from "./Octicon.vue";
 
 const props = defineProps<{

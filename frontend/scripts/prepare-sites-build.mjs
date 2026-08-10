@@ -23,9 +23,11 @@ rmSync(path.join(dist, ".openai", "drizzle"), {
 mkdirSync(path.join(dist, "server"), { recursive: true });
 mkdirSync(path.join(dist, ".openai"), { recursive: true });
 await build({
-  entryPoints: [worker],
-  outfile: path.join(dist, "server", "index.js"),
+  entryPoints: [{ in: worker, out: "index" }],
+  outdir: path.join(dist, "server"),
   bundle: true,
+  splitting: true,
+  chunkNames: "chunks/[name]-[hash]",
   format: "esm",
   platform: "browser",
   target: "es2022",

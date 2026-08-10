@@ -4,28 +4,34 @@ import { buildReviewSignal } from "../domain/review-signals";
 import type { RefreshRule } from "../domain/refresh-policy";
 import { githubFetch } from "../integrations/github/client";
 import {
-  fetchIncrementalIssues,
-  fetchIncrementalPulls,
-  fetchPullBehindBy,
+  fetchIncrementalCommunity,
+} from "../integrations/github/pulls/discovery";
+import {
   fetchPullFileStats,
+} from "../integrations/github/pulls/files";
+import {
   fetchPullReviewFacts,
+} from "../integrations/github/pulls/reviews";
+import {
   fetchPullSyncSnapshots,
-  type PullSyncSnapshot,
-} from "../integrations/github/pulls";
+} from "../integrations/github/pulls/snapshots";
+import type { PullSyncSnapshot } from "../integrations/github/pulls/types";
 import { HttpError } from "../http";
 import { findRefreshTaskConfig } from "../repositories/refresh-tasks";
 import {
   countCommunityKinds,
-  findFactItem,
+  findFactItems,
   findFactRepository,
-  insertFactEvent,
-  markCurrentAnalysisOutdated,
-  saveCommunityFact,
+  insertFactEvents,
+  markCurrentAnalysesOutdated,
+  saveCommunityFacts,
   scheduleClassificationIfPending,
   updateRepositoryFactStats,
+  type CommunityFactInput,
+  type FactEventInput,
 } from "../repositories/facts";
 import { shouldMarkSummaryStale } from "../domain/refresh-policy";
-import { withUserGithubToken } from "./github-settings";
+import { refreshGithubRateLimits, withUserGithubToken } from "./github-settings";
 
 function communityItemId(repoId: string, kind: string, number: number) {
   return `${repoId}:${kind}:${number}`;
@@ -54,8 +60,7 @@ function statusText(kind: "pr" | "issue", state: string) {
   return kind === "pr" ? "Review required" : "Open";
 }
 
-async function recordFactEvent(
-  env: WorkerEnv,
+function buildFactEvent(
   input: {
     repoId: string;
     itemId: string;
@@ -65,8 +70,8 @@ async function recordFactEvent(
     actor?: string | null;
   },
 ) {
-  if (!input.occurredAt) return;
-  await insertFactEvent(env, {
+  if (!input.occurredAt) return null;
+  return {
     id: crypto.randomUUID(),
     repoId: input.repoId,
     itemId: input.itemId,
@@ -75,7 +80,7 @@ async function recordFactEvent(
     observedAt: new Date().toISOString(),
     source: input.source,
     actor: input.actor ?? null,
-  });
+  } satisfies FactEventInput;
 }
 
 async function upsertFacts(
@@ -90,11 +95,12 @@ async function upsertFacts(
     classificationRule: RefreshRule;
     diff?: Record<string, any> | null;
     reviewFacts?: Record<string, any> | null;
+    existing?: Record<string, any> | null;
   },
 ) {
   const item = input.item;
   const id = communityItemId(input.repoId, input.kind, Number(item.number));
-  const existing = await findFactItem(env, id);
+  const existing = input.existing ?? null;
   const now = new Date().toISOString();
   const title = String(item.title ?? "");
   const body = String(item.body ?? "");
@@ -202,7 +208,7 @@ async function upsertFacts(
   const importantText = `${title}\n${body}`.replace(/\b(?:accuracy\s+)?regression tests?\b/gi, "");
   const important = /regression|breaking change|security|critical|cve|data loss|performance drop|回归|安全|破坏性/i.test(importantText) ? 1 : 0;
 
-  await saveCommunityFact(env, {
+  const fact: CommunityFactInput = {
     id,
     repoId: input.repoId,
     kind: input.kind,
@@ -241,15 +247,12 @@ async function upsertFacts(
     reviewSignal,
     summaryStale,
     classificationStale,
-  });
-
-  if (headChanged) {
-    await markCurrentAnalysisOutdated(env, id);
-  }
+  };
 
   const occurredAt = String(item.updated_at ?? now);
+  const events: FactEventInput[] = [];
   if (!existing) {
-    await recordFactEvent(env, {
+    const opened = buildFactEvent({
       repoId: input.repoId,
       itemId: id,
       eventType: "opened",
@@ -257,24 +260,36 @@ async function upsertFacts(
       source: "github",
       actor: item.user?.login,
     });
+    if (opened) events.push(opened);
   }
   if (existing?.state === "closed" && ["open", "draft"].includes(state)) {
-    await recordFactEvent(env, { repoId: input.repoId, itemId: id, eventType: "reopened", occurredAt, source: "facts" });
+    const event = buildFactEvent({ repoId: input.repoId, itemId: id, eventType: "reopened", occurredAt, source: "facts" });
+    if (event) events.push(event);
   }
   if (existing?.state !== "merged" && state === "merged") {
-    await recordFactEvent(env, { repoId: input.repoId, itemId: id, eventType: "merged", occurredAt: item.merged_at ?? occurredAt, source: "github" });
+    const event = buildFactEvent({ repoId: input.repoId, itemId: id, eventType: "merged", occurredAt: item.merged_at ?? occurredAt, source: "github" });
+    if (event) events.push(event);
   } else if (existing && !["closed", "merged"].includes(existing.state) && state === "closed") {
-    await recordFactEvent(env, { repoId: input.repoId, itemId: id, eventType: "closed", occurredAt: item.closed_at ?? occurredAt, source: "github" });
+    const event = buildFactEvent({ repoId: input.repoId, itemId: id, eventType: "closed", occurredAt: item.closed_at ?? occurredAt, source: "github" });
+    if (event) events.push(event);
   }
   if (input.kind === "pr" && existing && !existing.is_draft && item.draft) {
-    await recordFactEvent(env, { repoId: input.repoId, itemId: id, eventType: "draft", occurredAt, source: "facts" });
+    const event = buildFactEvent({ repoId: input.repoId, itemId: id, eventType: "draft", occurredAt, source: "facts" });
+    if (event) events.push(event);
   } else if (input.kind === "pr" && existing?.is_draft && !item.draft && state === "open") {
-    await recordFactEvent(env, { repoId: input.repoId, itemId: id, eventType: "ready_for_review", occurredAt, source: "facts" });
+    const event = buildFactEvent({ repoId: input.repoId, itemId: id, eventType: "ready_for_review", occurredAt, source: "facts" });
+    if (event) events.push(event);
   }
-  if (!existing || updatedAtChanged || existing.facts_hash !== factsHash) {
-    await recordFactEvent(env, { repoId: input.repoId, itemId: id, eventType: "updated", occurredAt, source: "facts" });
+  if (existing && (updatedAtChanged || existing.facts_hash !== factsHash)) {
+    const event = buildFactEvent({ repoId: input.repoId, itemId: id, eventType: "updated", occurredAt, source: "facts" });
+    if (event) events.push(event);
   }
-  return { id, updatedAt: String(item.updated_at ?? now) };
+  return {
+    result: { id, updatedAt: String(item.updated_at ?? now) },
+    fact,
+    events,
+    markAnalysisOutdated: headChanged,
+  };
 }
 
 async function refreshOneFact(
@@ -284,44 +299,15 @@ async function refreshOneFact(
   item: Record<string, any>,
   summaryConfig: Record<string, any> | null,
   classificationConfig: Record<string, any> | null,
+  existing: Record<string, any> | null,
   snapshot?: PullSyncSnapshot | null,
 ) {
+  if (snapshot) item = { ...item, ...snapshot.item };
   let diff: Record<string, any> | null = null;
   let reviewFacts: Record<string, any> | null = null;
   if (kind === "pr") {
     if (snapshot) {
-      const mergeState = String(snapshot.reviewFacts.mergeState ?? "");
-      let behindBy: number | null = mergeState === "behind" ? null : 0;
-      if (mergeState === "behind") {
-        const existing = await findFactItem(
-          env,
-          communityItemId(repository.id, kind, Number(item.number)),
-        );
-        let existingBehindBy: number | null = null;
-        try {
-          const existingSignal = existing?.review_signal_json
-            ? JSON.parse(existing.review_signal_json)
-            : null;
-          existingBehindBy = existingSignal?.behindBy == null
-            ? null
-            : Number(existingSignal.behindBy);
-        } catch {
-          existingBehindBy = null;
-        }
-        const headSha = String(item.head?.sha ?? "");
-        if (existing?.head_sha === headSha && existingBehindBy !== null) {
-          behindBy = existingBehindBy;
-        } else {
-          behindBy = await fetchPullBehindBy(
-            env,
-            repository.owner,
-            repository.name,
-            String(item.base?.sha ?? ""),
-            headSha,
-          );
-        }
-      }
-      reviewFacts = { ...snapshot.reviewFacts, behindBy };
+      reviewFacts = { ...snapshot.reviewFacts, behindBy: null };
       diff = snapshot.diff.complete
         ? snapshot.diff
         : await fetchPullFileStats(
@@ -329,6 +315,7 @@ async function refreshOneFact(
             repository.owner,
             repository.name,
             Number(item.number),
+            snapshot.diff,
           );
     } else {
       [diff, reviewFacts] = await Promise.all([
@@ -348,6 +335,7 @@ async function refreshOneFact(
       (classificationConfig?.refresh_rule as RefreshRule) ?? "first_only",
     diff,
     reviewFacts,
+    existing,
   });
 }
 
@@ -360,8 +348,14 @@ export async function refreshCommunityFacts(
     activeRangeHours: number;
     maxItems: number;
     itemId?: string | null;
+    onProgress?: (progress: {
+      stage: string;
+      current: number;
+      total: number;
+    }) => Promise<void>;
   },
 ) {
+  await input.onProgress?.({ stage: "discovering", current: 0, total: 0 });
   const githubEnv = await withUserGithubToken(env, input.userId);
   const repository = await findFactRepository(env, input.repoId);
   if (!repository) throw new HttpError(404, "仓库不存在");
@@ -397,10 +391,11 @@ export async function refreshCommunityFacts(
       boundary: input.watermark,
       initialCutoff,
     };
-    const [pulls, issues] = await Promise.all([
-      fetchIncrementalPulls(githubEnv, base, window),
-      fetchIncrementalIssues(githubEnv, base, window),
-    ]);
+    const { pulls, issues } = await fetchIncrementalCommunity(
+      githubEnv,
+      base,
+      window,
+    );
     targets = [
       ...pulls.map((item) => ({ kind: "pr" as const, item })),
       ...issues.map((item) => ({ kind: "issue" as const, item })),
@@ -408,6 +403,12 @@ export async function refreshCommunityFacts(
       String(right.item.updated_at ?? "").localeCompare(String(left.item.updated_at ?? "")),
     );
   }
+
+  await input.onProgress?.({
+    stage: "discovered",
+    current: 0,
+    total: targets.length,
+  });
 
   const pullSnapshots = new Map<number, PullSyncSnapshot>();
   if (!input.itemId) {
@@ -420,36 +421,101 @@ export async function refreshCommunityFacts(
         "批量社区事实刷新需要 GitHub Token；请先在设置中配置，避免使用匿名 Core 额度逐条请求 PR",
       );
     }
-    const batchSize = Math.min(Math.max(input.maxItems, 1), 500);
-    for (let offset = 0; offset < pullNumbers.length; offset += batchSize) {
-      const batch = await fetchPullSyncSnapshots(
-        githubEnv,
-        repository.owner,
-        repository.name,
-        pullNumbers.slice(offset, offset + batchSize),
+    const snapshots = await fetchPullSyncSnapshots(
+      githubEnv,
+      repository.owner,
+      repository.name,
+      pullNumbers,
+    );
+    for (const [number, snapshot] of snapshots) {
+      pullSnapshots.set(number, snapshot);
+    }
+    await input.onProgress?.({
+      stage: "enriching",
+      current: pullSnapshots.size,
+      total: targets.length,
+    });
+    const missing = pullNumbers.filter((number) => !pullSnapshots.has(number));
+    if (missing.length) {
+      throw new HttpError(
+        502,
+        `GitHub 未返回 ${missing.length} 个目标 PR 的完整快照，成功水位保持不变`,
       );
-      for (const [number, snapshot] of batch) {
-        pullSnapshots.set(number, snapshot);
-      }
+    }
+    const incomplete = [...pullSnapshots.entries()]
+      .filter(([, snapshot]) => !snapshot.diff.complete);
+    const fileConcurrency = 4;
+    for (let offset = 0; offset < incomplete.length; offset += fileConcurrency) {
+      await Promise.all(
+        incomplete.slice(offset, offset + fileConcurrency).map(async ([number, snapshot]) => {
+          snapshot.diff = await fetchPullFileStats(
+            githubEnv,
+            repository.owner,
+            repository.name,
+            number,
+            snapshot.diff,
+          );
+        }),
+      );
+      await input.onProgress?.({
+        stage: "enriching_files",
+        current: Math.min(offset + fileConcurrency, incomplete.length),
+        total: incomplete.length,
+      });
     }
   }
 
-  const results: Array<{ id: string; updatedAt: string }> = [];
-  for (const target of targets) {
-    results.push(
-      await refreshOneFact(
+  const existingRows = await findFactItems(
+    env,
+    targets.map((target) =>
+      communityItemId(input.repoId, target.kind, Number(target.item.number)),
+    ),
+  );
+  const existingById = new Map(existingRows.map((row) => [String(row.id), row]));
+  const mutations: Awaited<ReturnType<typeof refreshOneFact>>[] = [];
+  const mutationBatchSize = 40;
+  for (let offset = 0; offset < targets.length; offset += mutationBatchSize) {
+    const batch = targets.slice(offset, offset + mutationBatchSize);
+    mutations.push(...await Promise.all(batch.map((target) =>
+      refreshOneFact(
         githubEnv,
         repository,
         target.kind,
         target.item,
         summaryConfig,
         classificationConfig,
+        existingById.get(
+          communityItemId(input.repoId, target.kind, Number(target.item.number)),
+        ) ?? null,
         target.kind === "pr"
           ? pullSnapshots.get(Number(target.item.number))
           : null,
       ),
-    );
+    )));
+    await input.onProgress?.({
+      stage: "preparing_writes",
+      current: Math.min(offset + mutationBatchSize, targets.length),
+      total: targets.length,
+    });
   }
+  await input.onProgress?.({ stage: "saving_facts", current: 0, total: targets.length });
+  await saveCommunityFacts(env, mutations.map((mutation) => mutation.fact));
+  await markCurrentAnalysesOutdated(
+    env,
+    mutations
+      .filter((mutation) => mutation.markAnalysisOutdated)
+      .map((mutation) => mutation.result.id),
+  );
+  await insertFactEvents(
+    env,
+    mutations.flatMap((mutation) => mutation.events),
+  );
+  await input.onProgress?.({
+    stage: "finalizing",
+    current: targets.length,
+    total: targets.length,
+  });
+  const results = mutations.map((mutation) => mutation.result);
   const counts = await countCommunityKinds(env, input.repoId);
   const countByKind = new Map(counts.map((row) => [row.kind, Number(row.count)]));
   const finishedAt = new Date().toISOString();
@@ -464,6 +530,7 @@ export async function refreshCommunityFacts(
     repoId: input.repoId,
     scheduledAt: finishedAt,
   });
+  await refreshGithubRateLimits(env, input.userId).catch(() => null);
   const watermark = results.reduce<string | null>(
     (latest, result) => !latest || result.updatedAt > latest ? result.updatedAt : latest,
     null,

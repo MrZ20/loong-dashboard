@@ -1,4 +1,4 @@
-import type { CommunityItem } from "../types";
+import type { CommunityItem } from "../types/community";
 
 function relativeTime(value: string) {
   const timestamp = new Date(value).valueOf();
@@ -11,6 +11,31 @@ function relativeTime(value: string) {
 }
 
 export function mapCommunityItem(item: any): CommunityItem {
+  const rawDomainAssessment = item.domainAssessment ?? {};
+  const domainAssessment = {
+    domain: rawDomainAssessment.domain ?? item.domain ?? "Other",
+    source: rawDomainAssessment.source ?? "text",
+    confidence: Number(rawDomainAssessment.confidence ?? 0),
+    confidenceLabel: ["high", "medium", "low"].includes(
+      rawDomainAssessment.confidenceLabel,
+    )
+      ? rawDomainAssessment.confidenceLabel
+      : "low",
+    matchedPaths: Array.isArray(rawDomainAssessment.matchedPaths)
+      ? rawDomainAssessment.matchedPaths
+      : [],
+    matchedTerms: Array.isArray(rawDomainAssessment.matchedTerms)
+      ? rawDomainAssessment.matchedTerms
+      : [],
+    scores: Array.isArray(rawDomainAssessment.scores)
+      ? rawDomainAssessment.scores
+      : [],
+    taxonomyVersion: rawDomainAssessment.taxonomyVersion,
+    matchedCodeownerRules: Array.isArray(rawDomainAssessment.matchedCodeownerRules)
+      ? rawDomainAssessment.matchedCodeownerRules
+      : [],
+  } satisfies NonNullable<CommunityItem["domainAssessment"]>;
+
   return {
     id: Number(item.number),
     repo: item.repo,
@@ -43,15 +68,7 @@ export function mapCommunityItem(item: any): CommunityItem {
     important: Boolean(item.important),
     lastEventType: item.lastEventType ?? null,
     lastEventAt: item.lastEventAt ?? null,
-    domainAssessment: item.domainAssessment ?? {
-      domain: item.domain,
-      source: "text",
-      confidence: 0,
-      confidenceLabel: "low",
-      matchedPaths: [],
-      matchedTerms: [],
-      scores: [],
-    },
+    domainAssessment,
     reviewSignal: item.reviewSignal ?? null,
     reviewSignalUpdatedAt: item.reviewSignalUpdatedAt ?? null,
     diff: item.diff ?? undefined,

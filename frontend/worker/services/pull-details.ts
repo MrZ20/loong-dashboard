@@ -1,5 +1,6 @@
-import { parseJson, type WorkerEnv } from "../db";
-import { fetchPullPatches } from "../integrations/github/pulls";
+import type { WorkerEnv } from "../db";
+import { parseJson } from "../mappers/database-row";
+import { fetchPullPatches } from "../integrations/github/pulls/files";
 import { HttpError } from "../http";
 import { findPullWithRepository } from "../repositories/community";
 

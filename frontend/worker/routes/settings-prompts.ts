@@ -10,7 +10,6 @@ import {
   requireMethod,
 } from "../http";
 import {
-  activatePromptTemplate,
   createPromptTemplate,
   removePromptTemplate,
   updatePromptTemplate,
@@ -44,18 +43,8 @@ export async function handlePromptSettings(
       featureKey: body.featureKey,
       name,
       content,
-      makeActive: body.makeActive === true,
     });
     return json({ template }, { status: 201 });
-  }
-
-  const activate = matchPath(
-    path,
-    /^\/api\/settings\/ai-prompts\/([^/]+)\/activate$/,
-  );
-  if (activate) {
-    requireMethod(request, ["POST"]);
-    return json(await activatePromptTemplate(env, user.id, activate[0]));
   }
 
   const template = matchPath(

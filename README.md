@@ -28,12 +28,12 @@ technical architecture maps, a Markdown knowledge base, and contextual chat.
 - Persistent multi-conversation AI chat: create, resume, rename, and delete
   threads from the full page while the floating window follows the active
   thread. Page context and selected text can be attached to a question.
-- Account settings with per-account profile, watchlist, chat history, and AI
-  provider selection. Local development can add and switch accounts; production
-  identity remains managed by the hosting platform.
+- Account settings with per-account profile, watchlist, chat history, and
+  explicit task-level AI bindings. Local development can add and switch
+  accounts; production identity remains managed by the hosting platform.
 - Multiple encrypted OpenAI-compatible API configurations per account, with an
-  explicit active-provider switch and the environment-variable provider kept as
-  a built-in debugging option.
+  environment-variable provider kept as a built-in debugging option. Each AI
+  task chooses its API configuration or local execution engine independently.
 - A per-account prompt center with multiple templates for PR/Issue triage, deep
   analysis, daily reports, cross-repository insights, and chat. Each function
   has one active template, while locked output contracts keep generated JSON and
@@ -54,15 +54,14 @@ The application lives in `frontend/`:
 - `worker/repositories/`: D1 reads and writes for each feature.
 - `worker/integrations/`: external GitHub and AI provider clients.
 - `worker/domain/`: pure community classification, review-signal, and diff
-  logic.
+logic.
 - `drizzle/`: the single authoritative source for the D1 schema.
 - `dist/client/`: generated static assets.
 - `dist/server/index.js`: generated Worker bundle.
 
 `worker/index.ts` is intentionally a thin same-origin shell. Route handlers do
-not embed SQL, domain modules do not depend on HTTP, and the small compatibility
-facades preserve existing imports while callers migrate toward the layered
-modules.
+not embed SQL, domain modules do not depend on HTTP, and callers import the
+bounded route, service, repository, integration, and domain modules directly.
 
 Production identity is provided by the hosting platform through authenticated
 user headers. The application never stores GitHub or AI credentials in the
@@ -91,6 +90,11 @@ code. Production-like development starts empty, so use the repository sync
 action to collect real GitHub data. Sample records are inserted only when
 `SEED_DEMO_DATA=true`.
 
+`dev:service` also enables Wrangler's local scheduled-event endpoint. It scans
+overdue refresh tasks once after the Worker becomes healthy and then every 15
+minutes, matching the production Cron cadence. Closing `dev:service` stops this
+local scheduler; merely leaving a browser tab open does not drive refreshes.
+
 For frontend-only visual work, `npm run dev` is still available, but API-backed
 features require `npm run dev:service`.
 
@@ -114,20 +118,22 @@ variables in the deployment environment:
 
 The environment-variable OpenAI-compatible configuration remains visible as a
 built-in provider in Settings. Users can also save several per-account
-OpenAI-compatible providers and choose one as active. If the selected provider
-has no usable credential, AI endpoints return an explicit, deterministic
-fallback document instead of pretending that a model was called.
+OpenAI-compatible providers and bind them explicitly to AI tasks. If a task's
+selected provider has no usable credential, the endpoint reports that failure
+instead of pretending that a model was called.
 
 Each account can save a GitHub Personal Access Token in Settings → Community
 Data Refresh. It is encrypted at rest with the same server-side credential key,
 never returned in plaintext, and takes precedence over `GITHUB_TOKEN` for fact
 refreshes, summary patch collection, and explicit diff retrieval.
 
-The checked-in `wrangler.toml` password is only for the loopback development
-server. Before listening on a LAN address, replace `LOCAL_ADMIN_PASSWORD`,
-`SESSION_SECRET`, and `CREDENTIALS_ENCRYPTION_KEY` with independent strong
-secrets. Local-auth mode ignores hosting identity headers so LAN clients cannot
-impersonate users by sending those headers directly.
+The default `wrangler.toml` keeps development authentication disabled and does
+not contain reusable authentication or encryption secrets. Local commands use
+the explicit `wrangler.local.toml`; replace its loopback-only defaults with
+independent strong values before listening on a LAN address. Production secrets
+must be injected by the deployment environment. Local-auth mode ignores hosting
+identity headers so LAN clients cannot impersonate users by sending those
+headers directly.
 
 ## Validation
 
@@ -143,9 +149,11 @@ Sites artifact. GitHub raw diff is preferred; if GitHub times out, the service
 falls back to the paginated files API so every changed file remains visible and
 marks any binary or provider-truncated patch explicitly.
 
-## Legacy root prototype
+## Feature status
 
-The repository root still contains the earlier Python-backed prototype, but it
-is not part of the maintained service or its validation path. The current
-feature status is tracked in [docs/FEATURES.md](docs/FEATURES.md); the deployable
-application described above lives in `frontend/`.
+The current feature status is tracked in [docs/FEATURES.md](docs/FEATURES.md).
+The deployable application described above lives in `frontend/`; generated
+artifacts and local Runner state are not part of the maintained source tree.
+# 技术架构
+
+当前实现文档维护在 [docs/architecture/current/](docs/architecture/current/README.md)。目录按仓库社区、AI 洞察、技术知识、AI 对话和设置等页面组织，并提供 PR/Issue 刷新、AI 配置与 Token、本地 Agent、版本状态和部署等端到端流程说明。

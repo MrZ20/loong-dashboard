@@ -2,7 +2,7 @@ import type {
   LocalAnalysisEvent,
   LocalAnalysisJob,
   LocalRunnerSettingsState,
-} from "../types";
+} from "../types/analysis";
 import { apiFetch } from "./core";
 
 export const localAnalysisApi = {

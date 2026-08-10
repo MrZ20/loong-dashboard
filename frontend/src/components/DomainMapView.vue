@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { api, ApiError } from "../api/client";
-import type { DomainMapApi, LocalAnalysisEvent, LocalAnalysisJob, PromptFeatureKey } from "../types";
+import { contentApi } from "../api/content";
+import { ApiError } from "../api/core";
+import { localAnalysisApi } from "../api/local-analysis";
+import type { DomainMapApi } from "../types/content";
+import type { LocalAnalysisEvent, LocalAnalysisJob } from "../types/analysis";
+import type { PromptFeatureKey } from "../types/ai";
+import AIExecutionFooter from "./AIExecutionFooter.vue";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 import Octicon from "./Octicon.vue";
 
@@ -50,7 +55,7 @@ async function loadDomains() {
   loading.value = true;
   error.value = "";
   try {
-    domains.value = await api.domains();
+    domains.value = await contentApi.domains();
     if (!selectedId.value && domains.value[0]) selectedId.value = domains.value[0].id;
   } catch (cause) {
     error.value =
@@ -65,7 +70,7 @@ async function createSnapshot() {
   snapshotting.value = true;
   error.value = "";
   try {
-    const result = await api.createDomainSnapshot(selectedDomain.value.name);
+    const result = await contentApi.createDomainSnapshot(selectedDomain.value.name);
     if (result.job) {
       localJob.value = result.job;
       localEvents.value = [];
@@ -87,7 +92,7 @@ async function pollLocalJob(jobId: string) {
   if (localJobTimer !== null) window.clearTimeout(localJobTimer);
   try {
     const after = localEvents.value.at(-1)?.sequence ?? 0;
-    const result = await api.localAnalysisJob(jobId, after);
+    const result = await localAnalysisApi.localAnalysisJob(jobId, after);
     localJob.value = result.job;
     localEvents.value.push(...result.events);
     if (!["completed", "failed", "cancelled"].includes(result.job.status)) {
@@ -105,7 +110,7 @@ async function pollLocalJob(jobId: string) {
 
 async function cancelLocalJob() {
   if (!localJob.value) return;
-  await api.cancelLocalAnalysisJob(localJob.value.id);
+  await localAnalysisApi.cancelLocalAnalysisJob(localJob.value.id);
   localJob.value = { ...localJob.value, status: "cancel_requested" };
 }
 
@@ -132,7 +137,7 @@ onUnmounted(() => {
     <p v-if="error" class="inline-error">{{ error }}</p>
     <div v-if="localJob" class="local-analysis-terminal local-analysis-terminal--insight" :data-status="localJob.status">
       <header>
-        <div><span class="local-analysis-terminal__lamp" /><strong>OpenCode 架构快照</strong></div>
+        <div><span class="local-analysis-terminal__lamp" /><strong>本地架构快照</strong></div>
         <button
           v-if="!['completed', 'failed', 'cancelled'].includes(localJob.status)"
           class="button button--secondary"
@@ -317,13 +322,22 @@ onUnmounted(() => {
               <h3>领域架构快照文档</h3>
               <p v-if="selectedDomain.snapshot">
                 {{ selectedDomain.snapshot.date }} · {{ selectedDomain.snapshot.promptTemplateName || "规则基线" }}
-                · {{ selectedDomain.snapshot.promptVersion || "legacy" }}
+                · {{ selectedDomain.snapshot.promptVersion || "未记录版本" }}
                 · {{ selectedDomain.snapshot.model || selectedDomain.snapshot.generationSource }}
               </p>
               <p v-else>保存完整架构介绍、技术结构图说明和当天变化，便于按日期回溯。</p>
             </div>
           </header>
           <MarkdownRenderer :content="snapshotDocument" />
+          <AIExecutionFooter
+            v-if="selectedDomain.snapshot"
+            :engine="selectedDomain.snapshot.generationSource"
+            :provider="selectedDomain.snapshot.provider"
+            :model="selectedDomain.snapshot.model"
+            :prompt-name="selectedDomain.snapshot.promptTemplateName"
+            :prompt-version="selectedDomain.snapshot.promptVersion"
+            :prompt-revision="selectedDomain.snapshot.promptRevision"
+          />
         </section>
       </article>
     </template>

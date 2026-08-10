@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import AnalysisDocumentWorkspace from "./AnalysisDocumentWorkspace.vue";
-import type { PromptFeatureKey } from "../types";
+import type { PromptFeatureKey } from "../types/ai";
 
 const emit = defineEmits<{
   "manage-prompt": [feature: PromptFeatureKey];

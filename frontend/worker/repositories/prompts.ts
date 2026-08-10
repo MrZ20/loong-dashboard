@@ -8,6 +8,8 @@ export interface PromptTemplateRow extends Record<string, unknown> {
   name: string;
   content: string;
   revision: number;
+  is_default: number;
+  is_seed: number;
   created_at: string;
   updated_at: string;
 }
@@ -16,8 +18,8 @@ export function listUserPromptTemplates(env: WorkerEnv, userId: string) {
   return query<PromptTemplateRow>(
     env,
     `SELECT * FROM ai_prompt_templates
-     WHERE user_id = ?
-     ORDER BY feature_key, updated_at DESC`,
+     WHERE user_id = ? AND is_seed = 0
+     ORDER BY feature_key, is_default DESC, updated_at DESC`,
     [userId],
   );
 }
@@ -29,8 +31,46 @@ export function findUserPromptTemplate(
 ) {
   return first<PromptTemplateRow>(
     env,
-    "SELECT * FROM ai_prompt_templates WHERE id = ? AND user_id = ?",
+    "SELECT * FROM ai_prompt_templates WHERE id = ? AND user_id = ? AND is_seed = 0",
     [templateId, userId],
+  );
+}
+
+export function findDefaultPromptTemplate(
+  env: WorkerEnv,
+  userId: string,
+  featureKey: PromptFeatureKey,
+) {
+  return first<PromptTemplateRow>(
+    env,
+    `SELECT * FROM ai_prompt_templates
+     WHERE user_id = ? AND feature_key = ? AND is_default = 1 AND is_seed = 0`,
+    [userId, featureKey],
+  );
+}
+
+export function ensureDefaultPromptTemplates(env: WorkerEnv, userId: string) {
+  const now = new Date().toISOString();
+  return run(
+    env,
+    `INSERT INTO ai_prompt_templates(
+       id, user_id, feature_key, name, content, revision,
+       is_default, is_seed, created_at, updated_at
+     )
+     SELECT
+       'default:' || ? || ':' || seeds.feature_key,
+       ?, seeds.feature_key, seeds.name, seeds.content, seeds.revision,
+       1, 0, ?, ?
+     FROM ai_prompt_templates AS seeds
+     WHERE seeds.is_seed = 1
+       AND NOT EXISTS(
+         SELECT 1 FROM ai_prompt_templates AS existing
+         WHERE existing.user_id = ?
+           AND existing.feature_key = seeds.feature_key
+           AND existing.is_default = 1
+           AND existing.is_seed = 0
+       )`,
+    [userId, userId, now, now, userId],
   );
 }
 
@@ -43,7 +83,7 @@ export function findPromptTemplateByName(
   return first<PromptTemplateRow>(
     env,
     `SELECT * FROM ai_prompt_templates
-     WHERE user_id = ? AND feature_key = ? AND name = ?`,
+     WHERE user_id = ? AND feature_key = ? AND name = ? AND is_seed = 0`,
     [userId, featureKey, name],
   );
 }
@@ -62,8 +102,9 @@ export function createPromptTemplateRow(
   return run(
     env,
     `INSERT INTO ai_prompt_templates(
-      id, user_id, feature_key, name, content, revision, created_at, updated_at
-    ) VALUES(?, ?, ?, ?, ?, 1, ?, ?)`,
+      id, user_id, feature_key, name, content, revision,
+      is_default, is_seed, created_at, updated_at
+    ) VALUES(?, ?, ?, ?, ?, 1, 0, 0, ?, ?)`,
     [
       input.id,
       input.userId,
@@ -90,7 +131,7 @@ export function updatePromptTemplateRow(
     env,
     `UPDATE ai_prompt_templates
      SET name = ?, content = ?, revision = revision + 1, updated_at = ?
-     WHERE id = ? AND user_id = ?`,
+     WHERE id = ? AND user_id = ? AND is_seed = 0`,
     [input.name, input.content, input.updatedAt, input.id, input.userId],
   );
 }
@@ -102,47 +143,7 @@ export function deletePromptTemplateRow(
 ) {
   return run(
     env,
-    "DELETE FROM ai_prompt_templates WHERE id = ? AND user_id = ?",
+    "DELETE FROM ai_prompt_templates WHERE id = ? AND user_id = ? AND is_seed = 0",
     [templateId, userId],
-  );
-}
-
-export function listPromptPreferences(env: WorkerEnv, userId: string) {
-  return query<{ feature_key: PromptFeatureKey; active_template_id: string | null }>(
-    env,
-    "SELECT feature_key, active_template_id FROM ai_prompt_preferences WHERE user_id = ?",
-    [userId],
-  );
-}
-
-export function findPromptPreference(
-  env: WorkerEnv,
-  userId: string,
-  featureKey: PromptFeatureKey,
-) {
-  return first<{ active_template_id: string | null }>(
-    env,
-    `SELECT active_template_id FROM ai_prompt_preferences
-     WHERE user_id = ? AND feature_key = ?`,
-    [userId, featureKey],
-  );
-}
-
-export function savePromptPreference(
-  env: WorkerEnv,
-  userId: string,
-  featureKey: PromptFeatureKey,
-  activeTemplateId: string | null,
-  updatedAt: string,
-) {
-  return run(
-    env,
-    `INSERT INTO ai_prompt_preferences(
-      user_id, feature_key, active_template_id, updated_at
-    ) VALUES(?, ?, ?, ?)
-    ON CONFLICT(user_id, feature_key) DO UPDATE SET
-      active_template_id = excluded.active_template_id,
-      updated_at = excluded.updated_at`,
-    [userId, featureKey, activeTemplateId, updatedAt],
   );
 }

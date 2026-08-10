@@ -882,6 +882,8 @@
 
 .filter-toolbar__intro {
   display: flex;
+  min-width: 155px;
+  flex: 1 1 auto;
   align-items: center;
   gap: 9px;
 }
@@ -901,6 +903,7 @@
 
 .filter-toolbar__intro > span:last-child {
   display: flex;
+  min-width: 0;
   flex-direction: column;
   gap: 2px;
 }
@@ -913,14 +916,20 @@
 }
 
 .filter-toolbar__intro small {
+  overflow: hidden;
   color: var(--text-tertiary);
   font-size: 9.5px;
   line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .filter-toolbar__controls {
   display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
   align-items: center;
   gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
 }
-

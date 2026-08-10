@@ -1,12 +1,16 @@
 import { computed, reactive } from "vue";
-import { api, ApiError } from "../api/client";
+import { chatApi } from "../api/chat";
+import { ApiError } from "../api/core";
+import { localAnalysisApi } from "../api/local-analysis";
 import type {
   ChatMessage,
   ChatThread,
+} from "../types/chat";
+import type {
   LocalAnalysisEvent,
   LocalAnalysisJob,
   LocalRunnerSettingsState,
-} from "../types";
+} from "../types/analysis";
 
 const state = reactive({
   open: false,
@@ -23,8 +27,6 @@ const state = reactive({
   mode: "normal" as "normal" | "repository",
   repoScope: "vllm-ascend",
   targetRef: "HEAD",
-  providerId: "",
-  modelId: "",
   localJob: null as LocalAnalysisJob | null,
   localEvents: [] as LocalAnalysisEvent[],
   localSettings: null as LocalRunnerSettingsState | null,
@@ -42,15 +44,13 @@ function applyThreadMode(thread?: ChatThread) {
   state.mode = thread?.mode || "normal";
   state.repoScope = thread?.repoScope || "vllm-ascend";
   state.targetRef = thread?.targetRef || "HEAD";
-  state.providerId = thread?.providerId || state.localSettings?.settings.defaultProvider || "";
-  state.modelId = thread?.modelId || state.localSettings?.settings.defaultModel || "";
 }
 
 async function pollRepositoryJob(jobId: string, threadId: string) {
   stopLocalJobPolling();
   try {
     const after = state.localEvents.at(-1)?.sequence ?? 0;
-    const result = await api.localAnalysisJob(jobId, after);
+    const result = await localAnalysisApi.localAnalysisJob(jobId, after);
     if (state.threadId !== threadId) return;
     state.localJob = result.job;
     state.localEvents.push(...result.events);
@@ -60,8 +60,8 @@ async function pollRepositoryJob(jobId: string, threadId: string) {
       return;
     }
     state.sending = false;
-    state.messages = (await api.messages(threadId)).messages;
-    const { threads } = await api.threads();
+    state.messages = (await chatApi.messages(threadId)).messages;
+    const { threads } = await chatApi.threads();
     state.threads = threads;
     sortThreads();
     if (result.job.status === "failed") state.error = result.job.error || "仓库分析失败";
@@ -95,18 +95,18 @@ async function initialize() {
     state.error = "";
     try {
       const [{ threads }, localSettings] = await Promise.all([
-        api.threads(),
-        api.localAnalysisSettings().catch(() => null),
+        chatApi.threads(),
+        localAnalysisApi.localAnalysisSettings().catch(() => null),
       ]);
       state.localSettings = localSettings;
       state.threads = threads;
       if (threads[0]) {
         state.threadId = threads[0].id;
-        state.messages = (await api.messages(state.threadId)).messages;
+        state.messages = (await chatApi.messages(state.threadId)).messages;
         applyThreadMode(threads[0]);
         await resumeThreadJob(threads[0]);
       } else {
-        const result = await api.createThread();
+        const result = await chatApi.createThread();
         state.threads = [result.thread];
         state.threadId = result.thread.id;
         state.messages = [];
@@ -128,7 +128,7 @@ async function createThread(title = "新对话") {
   state.threadBusy = true;
   state.error = "";
   try {
-    const result = await api.createThread(title, {
+    const result = await chatApi.createThread(title, {
       pageContext: state.pageContext,
     });
     state.threads.unshift(result.thread);
@@ -152,7 +152,7 @@ async function selectThread(threadId: string) {
   state.threadBusy = true;
   state.error = "";
   try {
-    state.messages = (await api.messages(threadId)).messages;
+    state.messages = (await chatApi.messages(threadId)).messages;
     state.threadId = threadId;
     state.draft = "";
     const thread = state.threads.find((item) => item.id === threadId);
@@ -170,15 +170,15 @@ async function deleteThread(threadId: string) {
   state.threadBusy = true;
   state.error = "";
   try {
-    await api.deleteThread(threadId);
+    await chatApi.deleteThread(threadId);
     state.threads = state.threads.filter((thread) => thread.id !== threadId);
     if (state.threadId === threadId) {
       const next = state.threads[0];
       if (next) {
         state.threadId = next.id;
-        state.messages = (await api.messages(next.id)).messages;
+        state.messages = (await chatApi.messages(next.id)).messages;
       } else {
-        const created = await api.createThread();
+        const created = await chatApi.createThread();
         state.threads = [created.thread];
         state.threadId = created.thread.id;
         state.messages = [];
@@ -196,7 +196,7 @@ async function renameThread(threadId: string, title: string) {
   if (!cleanTitle || state.threadBusy) return;
   state.threadBusy = true;
   try {
-    const { thread } = await api.renameThread(threadId, cleanTitle);
+    const { thread } = await chatApi.renameThread(threadId, cleanTitle);
     const index = state.threads.findIndex((item) => item.id === threadId);
     if (index >= 0) state.threads[index] = thread;
     sortThreads();
@@ -223,7 +223,7 @@ async function send(content = state.draft) {
   };
   state.messages.push(optimistic);
   try {
-    const result = await api.sendMessage(state.threadId, {
+    const result = await chatApi.sendMessage(state.threadId, {
       content: question,
       pageContext: state.pageContext,
       selection: state.selection,
@@ -265,7 +265,7 @@ async function send(content = state.draft) {
 async function cancelRepositoryJob() {
   if (!state.localJob) return;
   try {
-    await api.cancelLocalAnalysisJob(state.localJob.id);
+    await localAnalysisApi.cancelLocalAnalysisJob(state.localJob.id);
     state.localJob = { ...state.localJob, status: "cancel_requested" };
   } catch (cause) {
     state.error = cause instanceof ApiError ? cause.message : "取消仓库分析失败";

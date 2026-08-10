@@ -36,6 +36,8 @@ export async function handleRefreshSettings(
     maxItems: number;
     includeCiChanges: boolean;
     includeCommentChanges: boolean;
+    stateFilter: "all" | "open" | "draft" | "merged" | "closed";
+    domainFilter: string;
   }>>(request);
   return json({
     task: await saveRefreshSettings(env, user.id, repoId, taskType, body),

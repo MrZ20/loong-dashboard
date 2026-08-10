@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { communityItemKey } from "../domain/community-item";
-import type { CommunityItem, WatchlistMeta } from "../types";
+import type { CommunityItem, WatchlistMeta } from "../types/community";
 import Octicon from "./Octicon.vue";
 
 const props = defineProps<{

@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
-import { api, ApiError } from "../api/client";
-import type {
-  LocalAnalysisEvent,
-  LocalAnalysisJob,
-  TechnicalDocument,
-} from "../types";
+import { contentApi } from "../api/content";
+import { ApiError } from "../api/core";
+import { localAnalysisApi } from "../api/local-analysis";
+import type { AnalysisDocument, LocalAnalysisEvent, LocalAnalysisJob } from "../types/analysis";
+import type { TechnicalDocument } from "../types/content";
+import AIExecutionFooter from "./AIExecutionFooter.vue";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 import Octicon from "./Octicon.vue";
 
@@ -24,6 +24,7 @@ const error = ref("");
 const editing = ref(false);
 const localJob = ref<LocalAnalysisJob | null>(null);
 const localEvents = ref<LocalAnalysisEvent[]>([]);
+const draftExecution = ref<Pick<AnalysisDocument, "runner" | "provider" | "model" | "promptTemplateName" | "promptVersion" | "promptRevision"> | null>(null);
 let localJobTimer: number | null = null;
 const draft = reactive({
   id: "",
@@ -57,7 +58,7 @@ async function loadDocuments() {
   loading.value = true;
   error.value = "";
   try {
-    documents.value = await api.documents();
+    documents.value = await contentApi.documents();
     emit("update:count", documents.value.length);
     if (!selectedId.value && documents.value[0]) {
       selectedId.value = documents.value[0].id;
@@ -83,6 +84,7 @@ function startNew() {
   });
   localJob.value = null;
   localEvents.value = [];
+  draftExecution.value = null;
   editing.value = true;
 }
 
@@ -100,6 +102,7 @@ function startEdit() {
   });
   localJob.value = null;
   localEvents.value = [];
+  draftExecution.value = null;
   editing.value = true;
 }
 
@@ -115,7 +118,7 @@ async function pollDocumentJob(jobId: string) {
   if (localJobTimer !== null) window.clearTimeout(localJobTimer);
   try {
     const after = localEvents.value.at(-1)?.sequence ?? 0;
-    const result = await api.localAnalysisJob(jobId, after);
+    const result = await localAnalysisApi.localAnalysisJob(jobId, after);
     localJob.value = result.job;
     localEvents.value.push(...result.events);
     if (!["completed", "failed", "cancelled"].includes(result.job.status)) {
@@ -124,13 +127,14 @@ async function pollDocumentJob(jobId: string) {
     }
     generating.value = false;
     if (result.job.status === "completed" && result.job.analysisDocumentId) {
-      const generated = await api.analysis(result.job.analysisDocumentId);
+      const generated = await contentApi.analysis(result.job.analysisDocumentId);
       draft.contentMd = generated.contentMd;
       draft.summary = generated.summaryMd || draft.summary;
+      draftExecution.value = generated;
       return;
     }
     if (result.job.status !== "cancelled") {
-      error.value = result.job.error || "OpenCode 技术文档生成失败";
+      error.value = result.job.error || "本地技术文档生成失败";
     }
   } catch (cause) {
     generating.value = false;
@@ -148,7 +152,7 @@ async function generateDraft() {
   localJob.value = null;
   localEvents.value = [];
   try {
-    const result = await api.generateDocumentDraft({
+    const result = await contentApi.generateDocumentDraft({
       title: draft.title,
       category: draft.category,
       summary: draft.summary,
@@ -164,6 +168,14 @@ async function generateDraft() {
     if (result.draft) {
       draft.contentMd = result.draft.contentMd;
       draft.summary = result.draft.summary || draft.summary;
+      draftExecution.value = {
+        runner: "api",
+        provider: result.providerName || result.provider || "",
+        model: result.model || "",
+        promptTemplateName: result.promptTemplateName || "",
+        promptVersion: result.promptVersion || "",
+        promptRevision: Number(result.promptRevision || 1),
+      };
     }
     generating.value = false;
   } catch (cause) {
@@ -174,7 +186,7 @@ async function generateDraft() {
 
 async function cancelGeneration() {
   if (!localJob.value) return;
-  await api.cancelLocalAnalysisJob(localJob.value.id);
+  await localAnalysisApi.cancelLocalAnalysisJob(localJob.value.id);
   await pollDocumentJob(localJob.value.id);
 }
 
@@ -201,8 +213,8 @@ async function saveDocument() {
   };
   try {
     const result = draft.id
-      ? await api.updateDocument(draft.id, payload)
-      : await api.saveDocument(payload);
+      ? await contentApi.updateDocument(draft.id, payload)
+      : await contentApi.saveDocument(payload);
     await loadDocuments();
     selectedId.value = result.document.id;
     editing.value = false;
@@ -297,6 +309,15 @@ onBeforeUnmount(() => {
             </div>
             <label><span>摘要</span><textarea v-model="draft.summary" rows="2" /></label>
             <label><span>Markdown 正文</span><textarea v-model="draft.contentMd" rows="22" class="docs-editor__markdown" /></label>
+            <AIExecutionFooter
+              v-if="draftExecution"
+              :engine="draftExecution.runner"
+              :provider="draftExecution.provider"
+              :model="draftExecution.model"
+              :prompt-name="draftExecution.promptTemplateName"
+              :prompt-version="draftExecution.promptVersion"
+              :prompt-revision="draftExecution.promptRevision"
+            />
             <label><span>来源（每行一个 PR、Issue 或路径）</span><textarea v-model="draft.sourceRefs" rows="4" /></label>
             <button class="button button--primary" :disabled="saving" @click="saveDocument">
               <Octicon :name="saving ? 'sync' : 'check'" :size="14" :class="{ spinning: saving }" />

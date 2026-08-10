@@ -15,7 +15,7 @@
 | PR/Issue 两种排序 | 已完成 | 列表支持 `updated` 最近更新和 `number` 编号倒序，切换只作用于当前数据库结果，不触发刷新 |
 | 双仓库独立技术分类与标准刷新 | 已完成 | 两仓库独立类别文件、动态 Prompt、路径/CODEOWNERS/测试/Label 证据优先级、低置信度与候选分数、D1 taxonomy overlay 和设置页“更新分类标准”入口均已实现 |
 | Prompt 统一管理 | 已完成 | 14 个可配置 AI 功能全部注册在 Prompt Catalog；页面只提供执行或跳转设置，不再散落可编辑 Prompt；内置契约只读，自定义模板可新增、复制、编辑、删除和启用 |
-| 架构重构与过期清理 | 已完成 | Worker 已分层为 routes/services/repositories/integrations/domain；移除旧同步入口、详情隐式统计、旧单仓库分类器和演示数据；D1 migration `0013` 删除废弃 `sync_runs`；功能状态文档已同步更新 |
+| 架构重构与过期清理 | 已完成 | Worker 已分层为 routes/services/repositories/integrations/domain；移除旧同步入口、详情隐式统计、旧单仓库分类器和演示数据；初始 D1 schema 不再建立废弃表；功能状态文档已同步更新 |
 
 ## 本轮修复的领域映射缺口
 
@@ -36,7 +36,7 @@ vLLM-Ascend: Worker & Graph / XLite
 3. AI 架构快照的双仓库分类上下文；
 4. vLLM 到 vLLM-Ascend 的跨仓影响候选关联。
 
-历史数据库中的旧 6 类名称保留兼容别名，不要求用户先批量重新分类。
+调试阶段不保留旧分类别名；清空本地数据后直接按当前 taxonomy 重新生成。
 
 ## OpenCode 当前版本核对
 

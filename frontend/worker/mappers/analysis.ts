@@ -1,0 +1,47 @@
+import {
+  rowBoolean,
+  rowJsonArray,
+  rowJsonStringArray,
+  rowNullableText,
+  rowNumber,
+  rowText,
+  type DatabaseRow,
+  type JsonObject,
+} from "./database-row";
+
+export function mapAnalysis(row: DatabaseRow) {
+  return {
+    id: rowText(row, "id"),
+    type: rowText(row, "type"),
+    scope: rowText(row, "scope"),
+    title: rowText(row, "title"),
+    summaryMd: rowText(row, "summary_md"),
+    contentMd: rowText(row, "content_md"),
+    prompt: rowText(row, "prompt"),
+    promptTemplateId: rowNullableText(row, "prompt_template_id"),
+    promptTemplateName: rowText(row, "prompt_template_name"),
+    promptRevision: rowNumber(row, "prompt_revision", 1),
+    model: rowText(row, "model"),
+    baseSha: rowNullableText(row, "base_sha"),
+    headSha: rowNullableText(row, "head_sha"),
+    bodyHash: rowText(row, "body_hash"),
+    filesHash: rowText(row, "files_hash"),
+    promptType: rowText(row, "prompt_type"),
+    promptVersion: rowText(row, "prompt_version"),
+    runner: rowText(row, "runner", "api"),
+    provider: rowText(row, "provider"),
+    analysisSource: rowText(row, "analysis_source", "unknown"),
+    evidenceCompleteness: rowText(row, "evidence_completeness", "insufficient"),
+    versionStatus: rowText(row, "version_status", "current"),
+    status: rowText(row, "status"),
+    sourceRefs: rowJsonStringArray(row, "source_refs_json"),
+    agentSessionId: rowNullableText(row, "agent_session_id"),
+    runnerJobId: rowNullableText(row, "runner_job_id"),
+    codeReferences: rowJsonArray<JsonObject>(row, "code_references_json").filter(
+      (reference): reference is JsonObject => typeof reference === "object" && reference !== null && !Array.isArray(reference),
+    ),
+    localEvidence: rowBoolean(row, "local_evidence"),
+    createdAt: rowText(row, "created_at"),
+    updatedAt: rowText(row, "updated_at"),
+  };
+}

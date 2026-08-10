@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import type { AnalysisDocument, LocalAnalysisEvent, LocalAnalysisJob } from "../types/analysis";
+import type { CommunityItem } from "../types/community";
+import type { PromptFeatureKey } from "../types/ai";
 import type {
-  AnalysisDocument,
-  CommunityItem,
-  LocalAnalysisEvent,
-  LocalAnalysisJob,
-  PromptFeatureKey,
   RefreshTaskType,
-} from "../types";
+} from "../types/refresh";
 import DiffViewer from "./DiffViewer.vue";
+import AIExecutionFooter from "./AIExecutionFooter.vue";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 import Octicon from "./Octicon.vue";
 
@@ -128,6 +127,8 @@ const summaryStatusText = computed(() => ({
 
 const classificationStatusText = computed(() => ({
   missing: "尚未分类",
+  queued: "已排队",
+  running: "补判中",
   ready: "当前版本",
   possibly_stale: "可能过期",
   failed: "失败",
@@ -301,17 +302,17 @@ onMounted(() => drawer.value?.focus());
               <small>{{ item.reviewSignal.mergeState || "由 GitHub mergeable 判断" }}</small>
             </article>
             <article>
-              <span>分支新鲜度</span>
+              <span>分支距离</span>
               <strong>
                 {{
                   item.reviewSignal.behindBy === null
-                    ? "尚未获取"
+                    ? "按需查看"
                     : item.reviewSignal.behindBy === 0
                       ? "未落后"
                       : `落后 ${item.reviewSignal.behindBy} 个提交`
                 }}
               </strong>
-              <small>相对目标分支</small>
+              <small>精确提交数不参与批量刷新</small>
             </article>
             <article :data-status="item.reviewSignal.reviewDecision">
               <span>Review 决策</span>
@@ -340,6 +341,22 @@ onMounted(() => drawer.value?.focus());
               <Octicon name="x-circle" :size="12" />
               {{ check.name }}
             </a>
+          </div>
+        </section>
+
+        <section v-if="item.summarySource === 'ai' && item.summary" class="detail-section">
+          <div class="detail-section__title">
+            <h3>AI 摘要</h3>
+            <span>{{ summaryStatusText }}</span>
+          </div>
+          <div class="markdown-card">
+            <MarkdownRenderer :content="item.summary" />
+            <AIExecutionFooter
+              :provider="item.summaryVersion?.provider"
+              :model="item.summaryVersion?.model"
+              :prompt-version="item.summaryVersion?.promptVersion"
+              :prompt-revision="item.summaryVersion?.promptRevision"
+            />
           </div>
         </section>
 
@@ -459,8 +476,8 @@ onMounted(() => drawer.value?.focus());
             <header>
               <div>
                 <span class="local-analysis-terminal__lamp" />
-                <strong>OpenCode 本地分析</strong>
-                <small>{{ localJob.providerId || '默认 Provider' }} / {{ localJob.modelId || '默认 Model' }}</small>
+                <strong>本地代码分析</strong>
+                <small>{{ localJob.engineId || '本地 Agent' }} · {{ localJob.providerId || '默认 Provider' }} / {{ localJob.modelId || '默认 Model' }}</small>
               </div>
               <button
                 v-if="!['completed', 'failed', 'cancelled'].includes(localJob.status)"
@@ -510,6 +527,14 @@ onMounted(() => drawer.value?.focus());
               </code>
             </div>
             <MarkdownRenderer :content="analysisMd" />
+            <AIExecutionFooter
+              :engine="analysis?.runner"
+              :provider="analysis?.provider"
+              :model="analysis?.model"
+              :prompt-name="analysis?.promptTemplateName"
+              :prompt-version="analysis?.promptVersion"
+              :prompt-revision="analysis?.promptRevision"
+            />
           </div>
         </section>
       </div>

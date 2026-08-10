@@ -2,18 +2,25 @@ import type {
   AIProviderConfig,
   AIManagementState,
   AIExecutionMode,
+  AIPermissionProfileId,
+  AIUpdatePolicy,
+  AIWorkspaceMode,
   AITaskKey,
   AIPromptFeature,
   ClassificationTaxonomyState,
   PromptFeatureKey,
+} from "../types/ai";
+import type {
   RefreshRule,
   RefreshTaskState,
   RefreshTaskType,
+} from "../types/refresh";
+import type {
   AuthUser,
   UserAccount,
   GitHubCredentialState,
-  LocalAnalysisJob,
-} from "../types";
+} from "../types/account";
+import type { LocalAnalysisJob } from "../types/analysis";
 import { apiFetch } from "./core";
 
 export const settingsApi = {
@@ -87,8 +94,12 @@ export const settingsApi = {
     input: {
       executionMode: AIExecutionMode;
       providerConfigId: string;
-      opencodeProviderId: string;
-      opencodeModelId: string;
+      engineProviderId: string;
+      engineModelId: string;
+      reasoningEffort: string;
+      workspaceMode: AIWorkspaceMode;
+      updatePolicy: AIUpdatePolicy;
+      permissionProfileId: AIPermissionProfileId;
       promptTemplateId: string;
     },
   ) =>
@@ -103,6 +114,12 @@ export const settingsApi = {
       { method: "POST" },
     ),
 
+  clearAITaskError: (taskKey: AITaskKey) =>
+    apiFetch<{ ok: boolean }>(
+      `/api/settings/ai-tasks/${encodeURIComponent(taskKey)}/error`,
+      { method: "DELETE" },
+    ),
+
   saveAIProvider: (
     input: {
       name: string;
@@ -110,7 +127,6 @@ export const settingsApi = {
       apiMode: AIProviderConfig["apiMode"];
       model: string;
       token?: string;
-      makeActive?: boolean;
     },
     id?: string,
   ) =>
@@ -122,12 +138,6 @@ export const settingsApi = {
         method: id ? "PUT" : "POST",
         body: JSON.stringify(input),
       },
-    ),
-
-  activateAIProvider: (id: string) =>
-    apiFetch<{ ok: boolean; activeProviderId: string }>(
-      `/api/settings/ai-providers/${encodeURIComponent(id)}/activate`,
-      { method: "POST" },
     ),
 
   deleteAIProvider: (id: string) =>
@@ -167,12 +177,6 @@ export const settingsApi = {
       },
     ),
 
-  activateAIPrompt: (id: string) =>
-    apiFetch<{ featureKey: PromptFeatureKey; activeTemplateId: string }>(
-      `/api/settings/ai-prompts/${encodeURIComponent(id)}/activate`,
-      { method: "POST" },
-    ),
-
   deleteAIPrompt: (id: string) =>
     apiFetch<void>(`/api/settings/ai-prompts/${encodeURIComponent(id)}`, {
       method: "DELETE",
@@ -194,6 +198,8 @@ export const settingsApi = {
       maxItems: number;
       includeCiChanges: boolean;
       includeCommentChanges: boolean;
+      stateFilter: "all" | "open" | "draft" | "merged" | "closed";
+      domainFilter: string;
     }>,
   ) =>
     apiFetch<{ task: RefreshTaskState }>(

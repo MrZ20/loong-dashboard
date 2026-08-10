@@ -50,6 +50,39 @@ export function normalizeOpenCodeEvent(event, prepared) {
   return null;
 }
 
+export function normalizeCodexEvent(event, prepared) {
+  if (event?.method !== "item/completed") return null;
+  const item = event?.params?.item;
+  if (item?.type === "fileChange") {
+    return {
+      eventType: "warning",
+      source: "codex",
+      level: "warning",
+      message: "[Codex] 只读任务产生了文件修改事件，结果将被拒绝",
+      metadata: {},
+    };
+  }
+  if (item?.type !== "commandExecution") return null;
+  const command = String(item.command || "").slice(0, 500);
+  const location = relativeCodePath(item.cwd, prepared);
+  const isGit = /(^|\s)git\s+(status|log|show|diff|grep|rev-parse|merge-base|branch)(\s|$)/.test(command);
+  const isSearch = /(^|\s)(rg|grep|sed|head|tail)(\s|$)/.test(command);
+  if (!isGit && !isSearch) return null;
+  return {
+    eventType: isGit ? "git_query" : "symbol_search",
+    source: "codex",
+    level: item.status === "failed" ? "warning" : "info",
+    message: `${isGit ? "[Git]" : "[Search]"} ${command}`,
+    metadata: {
+      tool: isGit ? "git" : "search",
+      repository: location?.repository,
+      query: command,
+      durationMs: item.durationMs ?? undefined,
+      sourceEvidence: isSearch,
+    },
+  };
+}
+
 export class JobEventStream {
   constructor(api, jobId) {
     this.api = api;
@@ -60,7 +93,7 @@ export class JobEventStream {
   }
 
   async emit(eventType, source, message, metadata = {}, level = "info") {
-    if (eventType === "file_read") this.sourceRead = true;
+    if (eventType === "file_read" || metadata?.sourceEvidence === true) this.sourceRead = true;
     this.sequence += 1;
     await this.api.events(this.jobId, [{
       sequence: this.sequence,
@@ -73,13 +106,13 @@ export class JobEventStream {
     }]);
   }
 
-  async opencode(event, prepared) {
-    const normalized = normalizeOpenCodeEvent(event, prepared);
-    if (normalized) {
-      const key = `${normalized.eventType}:${normalized.message}`;
-      if (this.seenToolEvents.has(key)) return;
-      this.seenToolEvents.add(key);
-      await this.emit(normalized.eventType, normalized.source, normalized.message, normalized.metadata, normalized.level);
-    }
+  async engine(adapter, event, prepared) {
+    const normalized = adapter.normalizeEvent(event, prepared);
+    if (!normalized) return;
+    const key = `${normalized.eventType}:${normalized.message}`;
+    if (this.seenToolEvents.has(key)) return;
+    this.seenToolEvents.add(key);
+    await this.emit(normalized.eventType, normalized.source, normalized.message, normalized.metadata, normalized.level);
   }
+
 }

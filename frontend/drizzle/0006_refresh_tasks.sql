@@ -11,9 +11,15 @@ CREATE TABLE IF NOT EXISTS refresh_task_configs (
   max_items INTEGER NOT NULL DEFAULT 20,
   include_ci_changes INTEGER NOT NULL DEFAULT 0,
   include_comment_changes INTEGER NOT NULL DEFAULT 0,
+  state_filter TEXT NOT NULL DEFAULT 'all',
+  domain_filter TEXT NOT NULL DEFAULT 'all',
   status TEXT NOT NULL DEFAULT 'idle' CHECK (
     status IN ('idle', 'queued', 'running', 'ready', 'failed')
   ),
+  current_stage TEXT NOT NULL DEFAULT 'idle',
+  progress_current INTEGER NOT NULL DEFAULT 0,
+  progress_total INTEGER NOT NULL DEFAULT 0,
+  heartbeat_at TEXT,
   last_attempted_at TEXT,
   last_successful_at TEXT,
   watermark_updated_at TEXT,
@@ -49,6 +55,12 @@ CREATE TABLE IF NOT EXISTS refresh_task_runs (
   error TEXT,
   started_at TEXT NOT NULL,
   finished_at TEXT,
+  stage TEXT NOT NULL DEFAULT 'pending',
+  progress_current INTEGER NOT NULL DEFAULT 0,
+  progress_total INTEGER NOT NULL DEFAULT 0,
+  heartbeat_at TEXT,
+  lease_expires_at TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY(repo_id) REFERENCES repositories(id) ON DELETE CASCADE,
   FOREIGN KEY(item_id) REFERENCES community_items(id) ON DELETE SET NULL
@@ -125,5 +137,9 @@ CREATE INDEX IF NOT EXISTS community_summary_status_updated_idx
   ON community_items(repo_id, summary_status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS community_classification_status_updated_idx
   ON community_items(repo_id, classification_status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS community_summary_filter_idx
+  ON community_items(repo_id, summary_status, state, domain, updated_at DESC);
+CREATE INDEX IF NOT EXISTS refresh_runs_queue_lease_idx
+  ON refresh_task_runs(status, lease_expires_at, started_at);
 
 PRAGMA optimize;

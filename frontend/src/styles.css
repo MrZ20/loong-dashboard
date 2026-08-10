@@ -1,6 +1,9 @@
 @import "./styles/foundations.css";
 @import "./styles/shell.css";
+@import "./styles/community-list.css";
 @import "./styles/community-detail.css";
+@import "./styles/daily-report.css";
 @import "./styles/workspaces.css";
 @import "./styles/docs-chat.css";
+@import "./styles/settings.css";
 @import "./styles/settings-responsive.css";

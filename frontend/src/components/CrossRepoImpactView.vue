@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { api, ApiError } from "../api/client";
+import { communityApi } from "../api/community";
+import { ApiError } from "../api/core";
 import type {
   AdaptationStatus,
-  CrossRepoImpact,
   ImpactLevel,
-} from "../types";
+} from "../types/core";
+import type { CrossRepoImpact } from "../types/community";
 import Octicon from "./Octicon.vue";
 
 const emit = defineEmits<{ "update:count": [count: number] }>();
@@ -51,7 +52,7 @@ async function loadImpacts() {
   loading.value = true;
   error.value = "";
   try {
-    impacts.value = await api.impacts();
+    impacts.value = await communityApi.impacts();
     emit("update:count", impacts.value.length);
   } catch (cause) {
     error.value =
@@ -65,7 +66,7 @@ async function updateStatus(impact: CrossRepoImpact, status: AdaptationStatus) {
   updatingId.value = impact.id;
   error.value = "";
   try {
-    await api.updateImpactStatus(impact.id, status);
+    await communityApi.updateImpactStatus(impact.id, status);
     impact.status = status;
   } catch (cause) {
     error.value =

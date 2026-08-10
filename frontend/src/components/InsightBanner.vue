@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { RepositoryId, TodaySummary } from "../types";
+import type { RepositoryId } from "../types/core";
+import type { TodaySummary } from "../types/community";
 import Octicon from "./Octicon.vue";
 
 defineProps<{

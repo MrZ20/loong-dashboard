@@ -1,6 +1,6 @@
 # LoongBoard 功能状态
 
-本清单以 `frontend/` 中的可部署版本为准，更新于 2026-08-02。`[x]` 表示已有生产链路并纳入自动化验证，`[~]` 表示底层数据能力已存在但仍缺少完整产品入口。
+本清单以 `frontend/` 中的可部署版本为准，更新于 2026-08-09。`[x]` 表示已有生产链路并纳入自动化验证，`[~]` 表示底层数据能力已存在但仍缺少完整产品入口。
 
 ## 社区数据与阅读
 
@@ -26,7 +26,7 @@
 - [x] PR/Issue 摘要和深度分析使用独立输入、固定结构、证据完整性和显式版本契约
 - [x] PR 分析绑定 Base/Head SHA、正文/文件 Hash、Prompt 模板与修订；Issue 不伪造代码字段
 - [x] 未获取、超限或 GitHub 未返回的 Patch 明确进入证据缺口，模型未知文件引用会被移除并降低完整性
-- [x] 所有可配置 AI 功能统一进入设置页 Prompt 中心；每个功能支持多模板、新增、复制、编辑、删除自定义模板和切换启用项
+- [x] 所有可配置 AI 功能统一进入设置页“AI 管理”；每个功能支持多模板、新增、复制、编辑、删除自定义模板和切换启用项
 - [x] 内置模板只读且不可删除；用户要求只能作为系统契约之后的附加重点
 - [x] 历史分析保留模板、修订、Prompt 版本、模型、Provider 和生成时证据
 
@@ -40,12 +40,12 @@
 - [x] 跨仓库影响通过架构领域映射关联不同名称的上游/Ascend 类别，不再依赖 `domain` 名称完全相同
 - [x] 分类分析证据快照保存在 `docs/classification/TAXONOMY_ANALYSIS.md`
 
-## OpenCode 本地分析
+## 本地 Agent 分析
 
 - [x] Local Analysis Runner 主动领取 D1 任务，浏览器不直连 OpenCode，也不接收本地路径、密码或模型密钥
 - [x] 默认识别 LoongBoard 同级 `../vllm` 与 `../vllm-ascend`，支持安全 Fetch 和缺失仓库初始化 Clone
 - [x] 每次运行使用 `.loongboard/worktrees/<run-id>/` 下 detached Worktree，不切换用户主工作区
-- [x] OpenCode Adapter 集中实现健康检查、Provider/Model、Session、消息、SSE、取消、断线和超时
+- [x] OpenCode 与 Codex Adapter 分别实现健康检查、Provider/Model、Session、消息、事件、取消、断线和超时，并统一注册到 Engine Registry
 - [x] Session 与 LoongBoard 分析线程绑定；相同 Commit 可连续追问，Head 变化创建新运行并保留旧报告
 - [x] 深度分析、显式本地代码洞察和仓库分析对话复用同一 Runner；普通对话不会启动 OpenCode
 - [x] 结构化事件和最终报告持久化，刷新页面可恢复；只有实际读取源码并通过代码引用校验后才标记本地证据
@@ -54,7 +54,7 @@
 ## 账户、凭据与界面
 
 - [x] 本地管理员登录、签名会话、多开发账户及账户隔离的数据空间
-- [x] 多套 OpenAI-compatible Provider/API Token 加密保存、测试、切换；保留环境变量调试 Provider
+- [x] 多套 OpenAI-compatible Provider/API Token 加密保存、测试并按 AI 任务显式绑定；保留环境变量调试 Provider
 - [x] 每账户 GitHub Token 加密保存、测试和删除；优先级高于服务端 `GITHUB_TOKEN`，前端只显示状态和尾号
 - [x] GitHub 403 额度错误区分匿名/认证来源并保留安全端点，不回显调用 IP 或 Token
 - [x] 多对话创建、保留、删除和继续；全页与悬浮窗口同步，支持页面上下文和选中文本
